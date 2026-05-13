@@ -93,9 +93,9 @@ function generateRandomBoard() {
     let eventsPool = [];
     
     // Distribuim cele 39 de căsuțe (din 40, fiindcă prima e START)
-    for(let i=0; i<18; i++) eventsPool.push('question');
-    for(let i=0; i<6; i++) eventsPool.push('trivia');
-    for(let i=0; i<6; i++) eventsPool.push('minigame');
+    for(let i=0; i<10; i++) eventsPool.push('question');
+    for(let i=0; i<4; i++) eventsPool.push('trivia');
+    for(let i=0; i<4; i++) eventsPool.push('minigame');
     for(let i=0; i<5; i++) eventsPool.push('attack');
     for(let i=0; i<4; i++) eventsPool.push('boost');
 
