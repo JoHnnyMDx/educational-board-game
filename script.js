@@ -98,6 +98,7 @@ function generateRandomBoard() {
     for(let i=0; i<4; i++) eventsPool.push('minigame');
     for(let i=0; i<5; i++) eventsPool.push('attack');
     for(let i=0; i<4; i++) eventsPool.push('boost');
+    for(let i=0; i<12; i++) eventsPool.push('empty');
 
     // Amestecăm array-ul (Shuffle algoritmic Fisher-Yates)
     for (let i = eventsPool.length - 1; i > 0; i--) {
