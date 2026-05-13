@@ -8,8 +8,7 @@ const firebaseConfig = {
   projectId: "neocity-game",
   storageBucket: "neocity-game.firebasestorage.app",
   messagingSenderId: "932738671560",
-  appId: "1:932738671560:web:2e3da125d4ac7d20e616fd",
-  measurementId: "G-L2SRJCDVH1"
+  appId: "1:932738671560:web:2e3da125d4ac7d20e616fd"
 };
 
 firebase.initializeApp(firebaseConfig);
@@ -19,221 +18,182 @@ const playersRef = db.ref("players");
 let myPlayerId = "";
 let localPlayer = { name: "", position: 0, score: 100 };
 const boardSize = 40; 
+let allNetworkPlayers = {};
 
 // ==========================================
-// 2. SISTEM ANTI-FRAUDĂ
-// ==========================================
-document.addEventListener('contextmenu', event => event.preventDefault());
-document.addEventListener('keydown', function(event) {
-    if (event.key === 'PrintScreen' || event.keyCode === 123 || 
-        (event.ctrlKey && (event.key === 'c' || event.key === 'v' || event.key === 'u' || event.key === 'p' || event.key === 's'))) {
-        event.preventDefault();
-        alert('⚠️ SECURITY BREACH: Tentativă de fraudă! Ai pierdut 15 Energie.');
-        localPlayer.score -= 15;
-        syncPlayer();
-    }
-});
-document.addEventListener('selectstart', event => event.preventDefault());
-
-// ==========================================
-// EVENIMENTE EXTINSE (30 DE ZONE ACTIVE)
+// 2. EVENIMENTE EXTINSE (30+ ZONE ACTIVE)
 // ==========================================
 const gameEvents = [
-    // --- 15 ÎNTREBĂRI TEORETICE (Cap. 6 & 7) ---
-    { tile: 1, type: "question", category: "Hardware", question: "Ce unitate execută operațiile aritmetice și logice? (Cap. 6.1)", options: ["UCC", "UAL", "Memoria"], correct: 1 },
-    { tile: 3, type: "question", category: "Instrucțiuni", question: "Din ce este format formatul unei instrucțiuni? (Cap. 6.2)", options: ["Cod operație + Adrese", "Nume + Extensie", "Bit + Byte"], correct: 0 },
-    { tile: 5, type: "question", category: "Memorie", question: "Care este un suport magnetic de stocare? (Cap. 6.6)", options: ["CD-ROM", "HDD", "Blu-ray"], correct: 1 },
-    { tile: 8, type: "question", category: "Rețele", question: "Ce tip de rețea acoperă o arie geografică foarte mare (țări)? (Cap. 7.1)", options: ["LAN", "WAN", "MAN"], correct: 1 },
-    { tile: 11, type: "question", category: "Topologie", question: "În ce topologie toate nodurile sunt legate la un cablu central? (Cap. 7.3)", options: ["Stea", "Inel", "Magistrală"], correct: 2 },
-    { tile: 13, type: "question", category: "Internet", question: "Protocolul de bază al Internetului este: (Cap. 7.4)", options: ["TCP/IP", "HTTP", "FTP"], correct: 0 },
-    { tile: 15, type: "question", category: "Periferice", question: "Care dispozitiv este exclusiv de ieșire? (Cap. 6.8)", options: ["Tastatura", "Vizualizatorul", "Scanerul"], correct: 1 },
-    { tile: 17, type: "question", category: "Procesoare", question: "Cum se numește CPU-ul realizat pe un singur cip? (Cap. 6.11)", options: ["Mainframe", "Microprocesor", "Controller"], correct: 1 },
-    { tile: 21, type: "question", category: "Servicii", question: "Serviciul pentru transferul de fișiere este: (Cap. 7.5)", options: ["DNS", "FTP", "E-mail"], correct: 1 },
-    { tile: 23, type: "question", category: "Hardware", question: "Care imprimantă este cea mai rapidă pentru volume mari? (Cap. 6.9)", options: ["Laser", "Matricială", "Jet cerneală"], correct: 0 },
-    { tile: 25, type: "question", category: "Clasificare", question: "Calculatoarele folosite în cercetare nucleară sunt: (Cap. 6.10)", options: ["Micro", "Supercalculatoare", "Laptop"], correct: 1 },
-    { tile: 27, type: "question", category: "Memorie", question: "Capacitatea unui disc Blu-ray este mai mare decât a unui DVD? (Cap. 6.7)", options: ["Da", "Nu", "Sunt egale"], correct: 0 },
-    { tile: 31, type: "question", category: "Asamblare", question: "Limbajul apropiat de codul-calculator (mnemonici) este: (Cap. 6.4)", options: ["C++", "Python", "Asamblare"], correct: 2 },
-    { tile: 35, type: "question", category: "Resurse", question: "Componentele fizice se numesc resurse: (Cap. 6.5)", options: ["Programate", "Tehnice", "Umane"], correct: 1 },
-    { tile: 38, type: "question", category: "Scheme", question: "Cine dirijează execuția instrucțiunilor? (Cap. 6.1)", options: ["UAL", "Memoria", "UCC"], correct: 2 },
+    // 15 ÎNTREBĂRI TEORETICE
+    { tile: 1, type: "question", category: "Hardware", question: "Ce unitate execută operațiile aritmetice și logice?", options: ["UCC", "UAL", "Memoria"], correct: 1 },
+    { tile: 3, type: "question", category: "Instrucțiuni", question: "Din ce este format formatul unei instrucțiuni?", options: ["Cod operație + Adrese", "Nume + Extensie", "Bit + Byte"], correct: 0 },
+    { tile: 5, type: "question", category: "Memorie", question: "Care este un suport magnetic de stocare?", options: ["CD-ROM", "HDD", "Blu-ray"], correct: 1 },
+    { tile: 8, type: "question", category: "Rețele", question: "Ce rețea acoperă o arie geografică de mărimea unui județ/țări?", options: ["LAN", "WAN", "MAN"], correct: 1 },
+    { tile: 11, type: "question", category: "Topologie", question: "În ce topologie toate nodurile sunt legate la un cablu central?", options: ["Stea", "Inel", "Magistrală"], correct: 2 },
+    { tile: 13, type: "question", category: "Internet", question: "Protocolul de bază al Internetului este:", options: ["TCP/IP", "HTTP", "FTP"], correct: 0 },
+    { tile: 15, type: "question", category: "Periferice", question: "Care dispozitiv este exclusiv de ieșire?", options: ["Tastatura", "Vizualizatorul", "Scanerul"], correct: 1 },
+    { tile: 17, type: "question", category: "Procesoare", question: "Cum se numește CPU-ul realizat pe un singur cip?", options: ["Mainframe", "Microprocesor", "Controller"], correct: 1 },
+    { tile: 19, type: "question", category: "Servicii", question: "Serviciul pentru transferul de fișiere este:", options: ["DNS", "FTP", "E-mail"], correct: 1 },
+    { tile: 21, type: "question", category: "Hardware", question: "Care imprimantă este ideală pentru volume mari de text?", options: ["Laser", "Matricială", "Jet cerneală"], correct: 0 },
+    { tile: 23, type: "question", category: "Clasificare", question: "Calculatoarele de mare putere folosite în centre meteo sunt:", options: ["Micro", "Supercalculatoare", "Laptop"], correct: 1 },
+    { tile: 25, type: "question", category: "Memorie", question: "Capacitatea unui disc Blu-ray este mai mare decât a unui DVD?", options: ["Da", "Nu", "Sunt egale"], correct: 0 },
+    { tile: 27, type: "question", category: "Asamblare", question: "Limbajul de nivel scăzut care folosește mnemonici este:", options: ["C++", "Python", "Asamblare"], correct: 2 },
+    { tile: 31, type: "question", category: "Resurse", question: "Componentele fizice ale calculatorului se numesc resurse:", options: ["Programate", "Tehnice", "Umane"], correct: 1 },
+    { tile: 35, type: "question", category: "Scheme", question: "Cine dirijează execuția instrucțiunilor în schema von Neumann?", options: ["UAL", "Memoria", "UCC"], correct: 2 },
 
-    // --- 5 ÎNTREBĂRI AMUZANTE (CULTURĂ GENERALĂ) ---
-    { tile: 2, type: "question", category: "Funny", question: "Ce a fost primul 'bug' din istoria informaticii?", options: ["Un gândac real", "O eroare de scriere", "Un virus"], correct: 0 },
-    { tile: 10, type: "question", category: "Funny", question: "Dacă Google ar fi o persoană, unde ar locui?", options: ["În Cloud", "În garaj", "Peste tot"], correct: 0 },
-    { tile: 18, type: "question", category: "Funny", question: "Ce înseamnă PDF?", options: ["Portable Document Format", "Please Do Format", "Pâine De Fornetti"], correct: 0 },
-    { tile: 26, type: "question", category: "Funny", question: "Cea mai mare tastă de pe tastatură este:", options: ["Enter", "Shift", "Space"], correct: 2 },
-    { tile: 34, type: "question", category: "Funny", question: "Câte degete au 'picioarele' unui procesor modern?", options: ["Sute (pini)", "Două", "Niciunul"], correct: 0 },
+    // 5 ÎNTREBĂRI CULTURĂ GENERALĂ
+    { tile: 2, type: "question", category: "Trivia", question: "Ce a fost primul 'bug' informatic?", options: ["O molie reală", "O virgulă lipsă", "Un scurtcircuit"], correct: 0 },
+    { tile: 10, type: "question", category: "Trivia", question: "Cine este considerat părintele arhitecturii calculatoarelor moderne?", options: ["Bill Gates", "John von Neumann", "Steve Jobs"], correct: 1 },
+    { tile: 18, type: "question", category: "Trivia", question: "Ce înseamnă extensia '.exe'?", options: ["Example", "Executable", "Exit"], correct: 1 },
+    { tile: 26, type: "question", category: "Trivia", question: "Câte taste are, în medie, o tastatură standard?", options: ["101-105", "50-60", "peste 200"], correct: 0 },
+    { tile: 33, type: "question", category: "Trivia", question: "Care este unitatea minimă de informație?", options: ["Byte", "Bit", "Kilobyte"], correct: 1 },
 
-    // --- 5 ELEMENTE DE GHINION (MINI-JOCURI / CAPCANE) ---
-    { tile: 4, type: "minigame", title: "⚠️ SYSTEM CRASH!", text: "Trebuie să recuperezi datele! Joacă Snake și fă 10 puncte.", gameType: "snake" },
-    { tile: 14, type: "minigame", title: "⚠️ PACKET LOSS!", text: "Sari printre servere! Obține 10 puncte la DoodleJump.", gameType: "jump" },
-    { tile: 22, type: "trap", title: "⚠️ BSOD!", text: "Blue Screen of Death! Pierzi un rând și 20 Energie.", effect: -20 },
-    { tile: 32, type: "trap", title: "⚠️ TROJAN!", text: "Un virus ți-a mâncat resursele. Pierzi 30 Energie.", effect: -30 },
-    { tile: 37, type: "trap", title: "⚠️ OVERHEAT!", text: "Procesorul s-a încins. Mergi 5 pași înapoi.", move: -5 },
+    // 5 ELEMENTE GHINION (MINI-JOCURI)
+    { tile: 4, type: "minigame", title: "⚠️ SYSTEM CRASH!", text: "Fă 10 puncte la Snake pentru a restabili sistemul!" },
+    { tile: 14, type: "minigame", title: "⚠️ VIRUS DETECTED!", text: "Elimină amenințarea! Obține 10 puncte la Snake." },
+    { tile: 22, type: "trap", title: "⚠️ BSOD!", text: "Blue Screen of Death! Pierzi 20 Energie.", effect: -20 },
+    { tile: 29, type: "trap", title: "⚠️ OVERHEAT!", text: "Mergi 3 pași înapoi pentru răcire.", move: -3 },
+    { tile: 37, type: "trap", title: "⚠️ DATA LEAK!", text: "Ai pierdut pachete de date. -30 Energie.", effect: -30 },
 
-    // --- 5 ELEMENTE POZITIVE (ATAC / BOOST) ---
-    { tile: 7, type: "attack", title: "⚔️ SQL INJECTION!", text: "Alege un oponent și fură-i 20 XP!" },
-    { tile: 16, type: "boost", title: "🚀 OVERCLOCK!", text: "Sistemul zboară! Mai dă o dată cu zarul.", action: "reroll" },
-    { tile: 24, type: "attack", title: "⚔️ DDOS ATTACK!", text: "Blochează liderul! Fură-i 15 XP." },
-    { tile: 29, type: "boost", title: "🔋 UPS ACTIV!", text: "Protecție totală. Primești 40 Energie.", effect: 40 },
-    { tile: 39, type: "attack", title: "⚔️ ROOT ACCESS!", text: "Ai control total! Fură 25 XP de la cel mai apropiat jucător." }
+    // 5 ELEMENTE POZITIVE (ATAC / BOOST)
+    { tile: 7, type: "attack", title: "⚔️ HACKER SKILLS!", text: "Furi 25 XP de la un oponent activ!" },
+    { tile: 16, type: "boost", title: "🚀 OVERCLOCK!", text: "Primești 40 Energie bonus.", effect: 40 },
+    { tile: 24, type: "attack", title: "⚔️ SQL INJECTION!", text: "Atacă baza de date a unui coleg! +20 XP ție, -20 XP lui." },
+    { tile: 30, type: "boost", title: "🔋 UPS ACTIV!", text: "Ești protejat. Mai dă o dată cu zarul.", action: "reroll" },
+    { tile: 39, type: "attack", title: "⚔️ ROOT ACCESS!", text: "Furi 30 XP de la liderul clasamentului!" }
 ];
 
 // ==========================================
-// 4. AUTENTIFICARE
+// 3. LOGICA DE ATAC (PvP REAL)
 // ==========================================
-document.getElementById('joinGameBtn').addEventListener('click', () => {
-    let name = document.getElementById('playerNameInput').value.trim();
-    if (name.length < 3) return alert("Introdu un nume valid!");
+function performAttack(amount) {
+    let opponents = Object.keys(allNetworkPlayers).filter(id => id !== myPlayerId);
+    if (opponents.length > 0) {
+        // Alegem victima (cel mai mare scor sau primul găsit)
+        let targetId = opponents.sort((a, b) => allNetworkPlayers[b].score - allNetworkPlayers[a].score)[0];
+        let targetName = allNetworkPlayers[targetId].name;
+        let newTargetScore = (allNetworkPlayers[targetId].score || 100) - amount;
 
-    myPlayerId = "agent_" + Math.random().toString(36).substr(2, 9);
-    localPlayer.name = name;
-    
-    playersRef.child(myPlayerId).set(localPlayer);
-    document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('gameUI').style.display = 'block';
-    document.getElementById('displayName').innerText = name;
-    
-    initBoard();
-    listenToNetwork(); 
-});
-
-window.addEventListener('beforeunload', () => { if (myPlayerId) playersRef.child(myPlayerId).remove(); });
-
-// ==========================================
-// 5. MOTOR MULTIPLAYER & TABLĂ
-// ==========================================
-let allNetworkPlayers = {};
-
-function listenToNetwork() {
-    playersRef.on("value", (snapshot) => {
-        allNetworkPlayers = snapshot.val() || {};
-        updateBoardLive(allNetworkPlayers);
-        updateLeaderboard(allNetworkPlayers);
-    });
-}
-
-function initBoard() {
-    const gameBoard = document.getElementById('gameBoard');
-    gameBoard.innerHTML = '';
-    for (let i = 0; i < boardSize; i++) {
-        let cell = document.createElement('div');
-        cell.classList.add('cell');
-        cell.id = `cell-${i}`;
-        cell.innerText = i === 0 ? "START" : `Zona ${i}`;
+        // Update în Firebase pentru VICTIMĂ
+        playersRef.child(targetId).update({ score: newTargetScore });
         
-        let event = gameEvents.find(e => e.tile === i);
-        if (event) {
-            if (event.type === "question") { cell.style.borderColor = "#ff0055"; cell.innerText += "\n🔒"; }
-            else if (event.type === "boost") { cell.style.borderColor = "#00ffcc"; cell.innerText += "\n🟢"; }
-            else if (event.type === "trap") { cell.style.borderColor = "#ffaa00"; cell.innerText += "\n⚠️"; }
-            else if (event.type === "teleport") { cell.style.borderColor = "#9900ff"; cell.innerText += "\n🌀"; }
-        }
-        gameBoard.appendChild(cell);
+        // Update local pentru ATACATOR
+        localPlayer.score += amount;
+        alert(`⚔️ Atac reușit asupra lui ${targetName}! I-ai furat ${amount} XP.`);
+    } else {
+        alert("Nu sunt alți agenți online pentru a fi atacați. Ai primit 10 XP bonus.");
+        localPlayer.score += 10;
     }
-}
-
-function updateBoardLive(players) {
-    document.querySelectorAll('.player-token').forEach(el => el.remove());
-    for (let id in players) {
-        let p = players[id];
-        let cell = document.getElementById(`cell-${p.position}`);
-        if (cell) {
-            let token = document.createElement('div');
-            token.classList.add('player-token');
-            token.innerText = p.name.charAt(0).toUpperCase();
-            token.style.backgroundColor = id === myPlayerId ? "#00ffcc" : "#ff0055";
-            let offset = Math.random() * 15;
-            token.style.marginTop = offset + "px";
-            token.style.marginLeft = offset + "px";
-            cell.appendChild(token);
-        }
-    }
-}
-
-function updateLeaderboard(players) {
-    let list = document.getElementById('leaderboardList');
-    if (!list) return;
-    list.innerHTML = "";
-    Object.values(players).sort((a, b) => b.score - a.score).forEach(p => {
-        let li = document.createElement('li');
-        li.innerText = `${p.name}: ${p.score} XP`;
-        list.appendChild(li);
-    });
-}
-
-function syncPlayer() {
-    document.getElementById('playerScore').innerText = localPlayer.score;
-    playersRef.child(myPlayerId).set(localPlayer);
-}
-
-// ==========================================
-// 6. ZAR ȘI SISTEM DE EVENIMENTE / PvP
-// ==========================================
-document.getElementById('rollDiceBtn').addEventListener('click', () => {
-    let roll = Math.floor(Math.random() * 6) + 1;
-    document.getElementById('diceResult').innerText = `Zar: 🎲 ${roll}`;
-    
-    localPlayer.position += roll;
-    
-    // Buclă
-    if (localPlayer.position >= boardSize) {
-        localPlayer.position = localPlayer.position - boardSize;
-        localPlayer.score += 50; 
-        alert("🔄 Ai completat un ciclu de rețea! Bonus: +50 Energie.");
-    }
-    
     syncPlayer();
+}
+
+// ==========================================
+// 4. MINI-JOC SNAKE (CANVAS)
+// ==========================================
+let snakeInterval;
+function startSnakeGame() {
+    const canvas = document.getElementById('miniGameCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.style.display = "block";
     
-    // Verificăm PvP (Dacă pică peste alt jucător)
-    for (let id in allNetworkPlayers) {
-        if (id !== myPlayerId && allNetworkPlayers[id].position === localPlayer.position && localPlayer.position !== 0) {
-            alert(`⚔️ HACK ATACK! L-ai interceptat pe ${allNetworkPlayers[id].name}! Ai câștigat +15 Energie.`);
-            localPlayer.score += 15;
-            syncPlayer();
+    let snake = [{x: 10, y: 10}];
+    let food = {x: 15, y: 15};
+    let dx = 1, dy = 0;
+    let score = 0;
+    let box = 15;
+
+    // Control taste
+    const changeDir = (e) => {
+        if (e.key === "ArrowUp" && dy === 0) { dx = 0; dy = -1; }
+        if (e.key === "ArrowDown" && dy === 0) { dx = 0; dy = 1; }
+        if (e.key === "ArrowLeft" && dx === 0) { dx = -1; dy = 0; }
+        if (e.key === "ArrowRight" && dx === 0) { dx = 1; dy = 0; }
+    };
+    document.addEventListener('keydown', changeDir);
+
+    snakeInterval = setInterval(() => {
+        let head = {x: snake[0].x + dx, y: snake[0].y + dy};
+        
+        // Verificare coliziuni
+        if (head.x < 0 || head.x >= 20 || head.y < 0 || head.y >= 20 || snake.some(s => s.x === head.x && s.y === head.y)) {
+            clearInterval(snakeInterval);
+            alert("Game Over! Nu ai atins 10 puncte. -20 Energie.");
+            localPlayer.score -= 20;
+            finishMiniGame();
+            return;
         }
-    }
 
-    // Verificăm dacă există eveniment pe căsuță
-    let event = gameEvents.find(e => e.tile === localPlayer.position);
-    if (event) {
-        setTimeout(() => triggerEvent(event), 400);
-    }
-});
+        snake.unshift(head);
+        if (head.x === food.x && head.y === food.y) {
+            score++;
+            food = {x: Math.floor(Math.random() * 20), y: Math.floor(Math.random() * 20)};
+            if (score >= 10) {
+                clearInterval(snakeInterval);
+                alert("Sistem restaurat! Ai câștigat 20 Energie.");
+                localPlayer.score += 20;
+                finishMiniGame();
+            }
+        } else {
+            snake.pop();
+        }
 
+        // Desenare
+        ctx.fillStyle = "black"; ctx.fillRect(0, 0, 300, 300);
+        ctx.fillStyle = "red"; ctx.fillRect(food.x * box, food.y * box, box, box);
+        ctx.fillStyle = "#00ffcc";
+        snake.forEach(s => ctx.fillRect(s.x * box, s.y * box, box, box));
+    }, 150);
+
+    function finishMiniGame() {
+        document.removeEventListener('keydown', changeDir);
+        canvas.style.display = "none";
+        document.getElementById('challengeModal').classList.add('hidden');
+        document.getElementById('rollDiceBtn').disabled = false;
+        syncPlayer();
+    }
+}
+
+// ==========================================
+// 5. MOTORUL DE EVENIMENTE
+// ==========================================
 function triggerEvent(eventData) {
+    const modal = document.getElementById('challengeModal');
+    document.getElementById('challengeTitle').innerText = eventData.title || `[${eventData.category}]`;
+    document.getElementById('challengeText').innerText = eventData.text || eventData.question;
+    const ansContainer = document.getElementById('answersContainer');
+    ansContainer.innerHTML = '';
+
     if (eventData.type === "question") {
-        showChallenge(eventData);
+        eventData.options.forEach((opt, index) => {
+            let btn = document.createElement('button');
+            btn.classList.add('answer-btn');
+            btn.innerText = opt;
+            btn.onclick = () => {
+                if (index === eventData.correct) {
+                    alert("Corect! +20 XP");
+                    localPlayer.score += 20;
+                } else {
+                    alert("Greșit! -15 XP");
+                    localPlayer.score -= 15;
+                }
+                modal.classList.add('hidden');
+                document.getElementById('rollDiceBtn').disabled = false;
+                syncPlayer();
+            };
+            ansContainer.appendChild(btn);
+        });
+        modal.classList.remove('hidden');
+        document.getElementById('rollDiceBtn').disabled = true;
     } 
     else if (eventData.type === "minigame") {
-        // Logica pentru mini-jocuri (poți integra scripturi de Snake simple)
-        alert(`${eventData.title}\n${eventData.text}`);
-        let success = confirm("Ai reușit să faci cele 10 puncte?"); // Simulare pentru moment
-        if (!success) {
-            localPlayer.score -= 20;
-            alert("Eșec! Ai pierdut 20 Energie.");
-        } else {
-            localPlayer.score += 10;
-            alert("Succes! Sistem restaurat.");
-        }
-        syncPlayer();
+        modal.classList.remove('hidden');
+        document.getElementById('rollDiceBtn').disabled = true;
+        startSnakeGame();
     }
     else if (eventData.type === "attack") {
-        // Mecanica de furt puncte
-        alert(eventData.title + "\n" + eventData.text);
-        // Căutăm un oponent (dacă există alții în afară de mine)
-        let opponents = Object.keys(allNetworkPlayers).filter(id => id !== myPlayerId);
-        if (opponents.length > 0) {
-            let targetId = opponents[0]; // Furăm de la primul găsit
-            let targetName = allNetworkPlayers[targetId].name;
-            localPlayer.score += 20;
-            alert(`Succes! Ai furat 20 puncte de la ${targetName}.`);
-        } else {
-            alert("Nu sunt alți agenți online. Ai primit 10 puncte bonus de la server.");
-            localPlayer.score += 10;
-        }
-        syncPlayer();
+        performAttack(25);
     }
-    else if (eventData.type === "trap" || eventData.type === "boost") {
+    else {
         alert(eventData.title + "\n" + eventData.text);
         if (eventData.effect) localPlayer.score += eventData.effect;
         if (eventData.move) localPlayer.position += eventData.move;
@@ -241,15 +201,5 @@ function triggerEvent(eventData) {
     }
 }
 
-function checkAnswer(selectedIndex, correctIndex, modal) {
-    if (selectedIndex === correctIndex) {
-        alert("✅ Acces Acordat! Ai primit 20 Energie.");
-        localPlayer.score += 20;
-    } else {
-        alert("❌ Eroare! Sistemul te-a penalizat cu 15 Energie.");
-        localPlayer.score -= 15;
-    }
-    syncPlayer();
-    modal.classList.add('hidden');
-    document.getElementById('rollDiceBtn').disabled = false;
-}
+// --- Restul funcțiilor (initBoard, listenToNetwork, rollDice) rămân neschimbate ---
+// Asigură-te că funcția rollDiceBtn apelează triggerEvent(event)
