@@ -3,27 +3,44 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Digital Heist Academy - NeoCity</title>
+    <title>Digital Heist Academy - Live Arena</title>
     <link rel="stylesheet" href="style.css">
+    
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 </head>
 <body>
-    <div class="hud">
-        <h1>Digital Heist Academy</h1>
-        <div class="stats">
-            <p>Poziție: <span id="playerPosition">0</span></p>
-            <p>Energie (XP): <span id="playerScore">100</span></p>
+    <div id="loginScreen" class="modal">
+        <div class="modal-content">
+            <h2>Autentificare Sistem</h2>
+            <input type="text" id="playerNameInput" placeholder="Numele tău (ex. Ion Popescu)" />
+            <button id="joinGameBtn" class="answer-btn">Conectare la Rețea</button>
         </div>
-        <button id="rollDiceBtn">Aruncă Zarul 🎲</button>
-        <p id="diceResult"></p>
     </div>
 
-    <div id="gameBoard" class="board">
+    <div id="gameUI" style="display: none;">
+        <div class="hud">
+            <h1>NeoCity Live Network</h1>
+            <div class="stats">
+                <p>Agent: <span id="displayName">---</span></p>
+                <p>Energie (XP): <span id="playerScore">100</span></p>
+            </div>
+            <button id="rollDiceBtn">Aruncă Zarul 🎲</button>
+            <p id="diceResult"></p>
         </div>
+
+        <div id="gameBoard" class="board-large"></div>
+        
+        <div class="leaderboard">
+            <h3>Top Agenți (Live)</h3>
+            <ul id="leaderboardList"></ul>
+        </div>
+    </div>
 
     <div id="challengeModal" class="modal hidden">
         <div class="modal-content">
-            <h2 id="challengeTitle">Provocare de Sistem!</h2>
-            <p id="challengeText">Întrebarea apare aici...</p>
+            <h2 id="challengeTitle">Provocare!</h2>
+            <p id="challengeText">...</p>
             <div id="answersContainer" class="answers"></div>
         </div>
     </div>
