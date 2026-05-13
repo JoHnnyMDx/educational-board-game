@@ -1,196 +1,125 @@
-// ==========================================
-// 1. SISTEMUL ANTI-FRAUDĂ (SECURITY PROTOCOL)
-// ==========================================
-// Blochează click-dreapta
-document.addEventListener('contextmenu', event => event.preventDefault());
+const firebaseConfig = {
+  apiKey: "AIzaSyCsaDykKgbVUYyO7o1NjGRoD-TMrXo79SE",
+  authDomain: "neocity-game.firebaseapp.com",
+  databaseURL: "https://neocity-game-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "neocity-game",
+  storageBucket: "neocity-game.firebasestorage.app",
+  messagingSenderId: "932738671560",
+  appId: "1:932738671560:web:2e3da125d4ac7d20e616fd",
+  measurementId: "G-L2SRJCDVH1"
+};
 
-// Blochează combinații de taste (Copy, Paste, PrintScreen, Inspect Element)
-document.addEventListener('keydown', function(event) {
-    if (event.key === 'PrintScreen' || 
-        event.keyCode === 123 || // F12
-        (event.ctrlKey && (event.key === 'c' || event.key === 'v' || event.key === 'u' || event.key === 'p' || event.key === 's'))) {
-        
-        event.preventDefault();
-        
-        // Penalizare în joc pentru tentativă de fraudă
-        alert('⚠️ SECURITY BREACH DETECTED: Acțiune neautorizată! Ai pierdut 15 Energie.');
-        player.score -= 15;
-        updateHUD();
-    }
-});
+// Inițializare Firebase
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const playersRef = db.ref("players");
 
-// Blochează selectarea textului cu mouse-ul
-document.addEventListener('selectstart', event => event.preventDefault());
-
+// Variabile jucător local
+let myPlayerId = "";
+let localPlayer = { name: "", position: 0, score: 100 };
+const boardSize = 40; // Am mărit tabla pentru 30 minute de joc
 
 // ==========================================
-// 2. LOGICA DE BAZĂ A JOCULUI
+// AUTENTIFICARE ȘI CONECTARE LIVE
 // ==========================================
-const boardSize = 25; // Grilă 5x5
-const gameBoard = document.getElementById('gameBoard');
-let player = { position: 0, score: 100 };
-
-// Baza de date cu provocări (din Capitolele 6 și 7 - Manual Info clasa 11)
-const challenges = [
-    {
-        tile: 3,
-        type: "Laborator Hardware",
-        question: "Conform schemei funcționale (Cap. 6.1), care unitate are rolul de a extrage instrucțiunile din memoria internă și de a dirija execuția lor?",
-        options: ["Unitatea Aritmetică și Logică (UAL)", "Unitatea de Comandă și Control (UCC)", "Unitatea de Memorie Externă"],
-        correct: 1
-    },
-    {
-        tile: 6,
-        type: "Data Vault",
-        question: "Din ce este formată partea de comandă a unei instrucțiuni în format cod-calculator? (Cap. 6.2)",
-        options: ["Adresele operanzilor", "Codul operației", "Rezultatul operației"],
-        correct: 1
-    },
-    {
-        tile: 10,
-        type: "Cyber Attack",
-        question: "Sistemul a fost virusat! Trebuie să restabilești rețeaua. Care topologie folosește un nod central (ex: hub sau switch) la care sunt conectate toate celelalte calculatoare? (Cap. 7.3)",
-        options: ["Topologia Inel", "Topologia Stea", "Topologia Magistrală"],
-        correct: 1
-    },
-    {
-        tile: 15,
-        type: "Escape Room",
-        question: "Pentru a debloca ușa, identifică protocolul de bază al rețelei Internet care asigură transmiterea pachetelor de date: (Cap. 7.4)",
-        options: ["HTTP/HTML", "TCP/IP", "FTP/SMTP"],
-        correct: 1
-    },
-    {
-        tile: 19,
-        type: "Memory Scan",
-        question: "Care dintre următoarele este considerată o memorie pe disc optic? (Cap. 6.7)",
-        options: ["Hard Disk (HDD)", "Bandă magnetică", "Blu-ray Disc (BD)"],
-        correct: 2
-    },
-    {
-        tile: 22,
-        type: "Laborator STEM",
-        question: "Cum se numește circuitul integrat care include pe un singur cip Unitatea de Comandă și Control și Unitatea Aritmetică și Logică? (Cap. 6.11)",
-        options: ["Placa de bază", "Microprocesorul", "Memoria ROM"],
-        correct: 1
-    }
-];
-
-// Generăm vizual celulele pe tablă
-function initBoard() {
-    gameBoard.innerHTML = ''; // Curățăm tabla
-    for (let i = 0; i < boardSize; i++) {
-        let cell = document.createElement('div');
-        cell.classList.add('cell');
-        cell.id = `cell-${i}`;
-        
-        // Denumim celulele special
-        if (i === 0) cell.innerText = "START";
-        else if (i === boardSize - 1) cell.innerText = "NUCLEU AI (FINISH)";
-        else cell.innerText = `Zona ${i}`;
-        
-        // Colorăm vizual zonele cu provocări pentru a atrage atenția
-        if (challenges.some(c => c.tile === i)) {
-            cell.style.borderColor = "#ff0055";
-            cell.innerText += "\n🔒"; // Adăugăm un lacăt vizual
-        }
-
-        gameBoard.appendChild(cell);
-    }
-    updateHUD();
-}
-
-// Actualizează interfața (HUD) și mută pionul (clasa .active)
-function updateHUD() {
-    document.getElementById('playerPosition').innerText = player.position;
-    document.getElementById('playerScore').innerText = player.score;
-    
-    // Scoatem pionul de pe celula veche
-    document.querySelectorAll('.cell').forEach(c => c.classList.remove('active'));
-    
-    // Punem pionul pe noua celulă
-    let currentCell = document.getElementById(`cell-${player.position}`);
-    if(currentCell) {
-        currentCell.classList.add('active');
-    }
-}
-
-// ==========================================
-// 3. MECANICA DE ZAR ȘI MIȘCARE
-// ==========================================
-document.getElementById('rollDiceBtn').addEventListener('click', () => {
-    // Dacă jucătorul a terminat deja, nu mai dă cu zarul
-    if (player.position >= boardSize - 1) return;
-
-    let roll = Math.floor(Math.random() * 6) + 1; // Zar de la 1 la 6
-    document.getElementById('diceResult').innerText = `Zar: 🎲 ${roll}`;
-    
-    // Mutăm jucătorul
-    player.position += roll;
-    
-    // Ne asigurăm că nu iese de pe tablă
-    if (player.position >= boardSize - 1) {
-        player.position = boardSize - 1;
-        updateHUD();
-        setTimeout(() => alert("🎉 Felicitări! Ai recuperat Nucleul AI și ai salvat NeoCity! Scorul tău final: " + player.score + " Energie."), 500);
+document.getElementById('joinGameBtn').addEventListener('click', () => {
+    let name = document.getElementById('playerNameInput').value.trim();
+    if (name.length < 3) {
+        alert("Introdu un nume valid!");
         return;
     }
+
+    myPlayerId = "agent_" + Math.random().toString(36).substr(2, 9);
+    localPlayer.name = name;
     
-    updateHUD();
+    // Înregistrăm jucătorul în baza de date
+    playersRef.child(myPlayerId).set(localPlayer);
+
+    // Ascundem login-ul, arătăm jocul
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('gameUI').style.display = 'block';
+    document.getElementById('displayName').innerText = name;
     
-    // Verificăm dacă a picat pe o celulă cu o provocare
-    checkForEvents(player.position);
+    initBoard();
+    listenToNetwork(); // Pornim radarul pentru ceilalți jucători
+});
+
+// Sterge jucătorul din DB cand închide tab-ul
+window.addEventListener('beforeunload', () => {
+    if (myPlayerId) playersRef.child(myPlayerId).remove();
 });
 
 // ==========================================
-// 4. SISTEMUL DE PROVOCĂRI (MODAL)
+// MOTORUL MULTIPLAYER (ASCULTARE LIVE)
 // ==========================================
-function checkForEvents(pos) {
-    let event = challenges.find(c => c.tile === pos);
-    if (event) {
-        // Punem un mic delay ca jucătorul să vadă că s-a mutat înainte să apară întrebarea
-        setTimeout(() => showChallenge(event), 300);
-    }
-}
-
-function showChallenge(challengeData) {
-    const modal = document.getElementById('challengeModal');
-    const qTitle = document.getElementById('challengeTitle');
-    const qText = document.getElementById('challengeText');
-    const ansContainer = document.getElementById('answersContainer');
-    
-    qTitle.innerText = `[${challengeData.type}]`;
-    qText.innerText = challengeData.question;
-    ansContainer.innerHTML = ''; // Curățăm butoanele vechi
-    
-    // Generăm butoanele pentru răspunsuri
-    challengeData.options.forEach((opt, index) => {
-        let btn = document.createElement('button');
-        btn.classList.add('answer-btn');
-        btn.innerText = opt;
-        btn.onclick = () => checkAnswer(index, challengeData.correct, modal);
-        ansContainer.appendChild(btn);
+function listenToNetwork() {
+    // Ori de câte ori SE SCHIMBĂ ceva pe server, updatăm tabla
+    playersRef.on("value", (snapshot) => {
+        let players = snapshot.val() || {};
+        updateBoardLive(players);
+        updateLeaderboard(players);
+        
+        // Mecanică PvP: Verificăm dacă cineva a picat peste noi
+        checkPvP(players);
     });
-    
-    // Afișăm fereastra modală
-    modal.classList.remove('hidden');
-    // Dezactivăm temporar butonul de zar până răspunde
-    document.getElementById('rollDiceBtn').disabled = true;
 }
 
-function checkAnswer(selectedIndex, correctIndex, modal) {
-    if (selectedIndex === correctIndex) {
-        alert("✅ Acces Acordat! Răspuns corect. Ai primit 20 Energie.");
-        player.score += 20;
-    } else {
-        alert("❌ Eroare! Răspuns incorect. Sistemul te-a penalizat cu 15 Energie.");
-        player.score -= 15;
+function updateBoardLive(players) {
+    // Curățăm toți pionii existenți de pe tablă
+    document.querySelectorAll('.player-token').forEach(el => el.remove());
+
+    // Desenăm pionii tuturor
+    for (let id in players) {
+        let p = players[id];
+        let cell = document.getElementById(`cell-${p.position}`);
+        
+        if (cell) {
+            let token = document.createElement('div');
+            token.classList.add('player-token');
+            token.innerText = p.name.charAt(0).toUpperCase(); // Inițiala numelui
+            token.style.backgroundColor = id === myPlayerId ? "#00ffcc" : "#ff0055"; // Tu ești verde, ei sunt roșii
+            
+            // Adăugăm token-ul în celulă (folosind flexbox sau absolute positioning în CSS)
+            cell.appendChild(token);
+        }
+    }
+}
+
+// ==========================================
+// LOGICA DE BAZĂ EXTINSĂ (ZAR & BUCLE)
+// ==========================================
+document.getElementById('rollDiceBtn').addEventListener('click', () => {
+    let roll = Math.floor(Math.random() * 6) + 1;
+    document.getElementById('diceResult').innerText = `Zar: 🎲 ${roll}`;
+    
+    localPlayer.position += roll;
+    
+    // Mecanica de Buclă (când trece de capăt, primește bonus și o ia de la capăt)
+    if (localPlayer.position >= boardSize) {
+        localPlayer.position = localPlayer.position - boardSize;
+        localPlayer.score += 50; 
+        alert("🔄 Ai completat un ciclu de rețea! Bonus: +50 Energie.");
     }
     
-    updateHUD();
-    modal.classList.add('hidden'); // Ascundem modalul
-    document.getElementById('rollDiceBtn').disabled = false; // Reactivăm zarul
+    // Salvăm noua stare în baza de date! Asta îi va alerta pe toți ceilalți instant.
+    syncPlayer();
+    
+    // Aici apelezi funcția ta veche checkForEvents(localPlayer.position) pentru întrebări!
+});
+
+function syncPlayer() {
+    document.getElementById('playerScore').innerText = localPlayer.score;
+    playersRef.child(myPlayerId).set(localPlayer);
 }
 
-// Pornim jocul
-initBoard();
+function checkPvP(allPlayers) {
+    // Verificăm dacă altcineva e pe aceeași celulă cu noi (și nu suntem la START)
+    for (let id in allPlayers) {
+        if (id !== myPlayerId && allPlayers[id].position === localPlayer.position && localPlayer.position !== 0) {
+            alert(`⚔️ HACK ATACK! Te-ai intersectat cu ${allPlayers[id].name}!`);
+            // Poți implementa o logică: cel cu scorul mai mare câștigă un duel, sau o mini-întrebare rapidă de departajare.
+        }
+    }
+}
+
+// + Include aici mecanica de Anti-Cheat și Modalul de Întrebări din codul precedent!
