@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Digital Heist Academy - NeoCity</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="hud">
+        <h1>Digital Heist Academy</h1>
+        <div class="stats">
+            <p>Poziție: <span id="playerPosition">0</span></p>
+            <p>Energie (XP): <span id="playerScore">100</span></p>
+        </div>
+        <button id="rollDiceBtn">Aruncă Zarul 🎲</button>
+        <p id="diceResult"></p>
+    </div>
+
+    <div id="gameBoard" class="board">
+        </div>
+
+    <div id="challengeModal" class="modal hidden">
+        <div class="modal-content">
+            <h2 id="challengeTitle">Provocare de Sistem!</h2>
+            <p id="challengeText">Întrebarea apare aici...</p>
+            <div id="answersContainer" class="answers"></div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
