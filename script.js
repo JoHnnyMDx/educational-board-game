@@ -11,10 +11,12 @@ const firebaseConfig = {
   appId: "1:932738671560:web:2e3da125d4ac7d20e616fd"
 };
 
+// Inițializare Firebase
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 const playersRef = db.ref("players");
 
+// Variabile de sistem
 let myPlayerId = "";
 let localPlayer = { name: "", position: 0, score: 100 };
 const boardSize = 40; 
@@ -24,6 +26,7 @@ let allNetworkPlayers = {};
 // 2. SISTEM ANTI-FRAUDĂ
 // ==========================================
 document.addEventListener('contextmenu', event => event.preventDefault());
+
 document.addEventListener('keydown', function(event) {
     if (event.key === 'PrintScreen' || event.keyCode === 123 || 
         (event.ctrlKey && (event.key === 'c' || event.key === 'v' || event.key === 'u' || event.key === 'p' || event.key === 's'))) {
@@ -33,10 +36,11 @@ document.addEventListener('keydown', function(event) {
         syncPlayer();
     }
 });
+
 document.addEventListener('selectstart', event => event.preventDefault());
 
 // ==========================================
-// 3. EVENIMENTE EXTINSE (30+ ZONE ACTIVE)
+// 3. EVENIMENTE EXTINSE (30 ZONE ACTIVE)
 // ==========================================
 const gameEvents = [
     // 15 ÎNTREBĂRI TEORETICE
@@ -63,23 +67,23 @@ const gameEvents = [
     { tile: 26, type: "question", category: "Trivia", question: "Câte taste are, în medie, o tastatură standard?", options: ["101-105", "50-60", "peste 200"], correct: 0 },
     { tile: 33, type: "question", category: "Trivia", question: "Care este unitatea minimă de informație?", options: ["Byte", "Bit", "Kilobyte"], correct: 1 },
 
-    // 5 ELEMENTE GHINION (MINI-JOCURI)
+    // 5 ELEMENTE GHINION (MINI-JOCURI / CAPCANE)
     { tile: 4, type: "minigame", title: "⚠️ SYSTEM CRASH!", text: "Fă 10 puncte la Snake pentru a restabili sistemul!" },
     { tile: 14, type: "minigame", title: "⚠️ VIRUS DETECTED!", text: "Elimină amenințarea! Obține 10 puncte la Snake." },
     { tile: 22, type: "trap", title: "⚠️ BSOD!", text: "Blue Screen of Death! Pierzi 20 Energie.", effect: -20 },
-    { tile: 29, type: "trap", title: "⚠️ OVERHEAT!", text: "Mergi 3 pași înapoi pentru răcire.", move: -3 },
+    { tile: 29, type: "trap", title: "⚠️ OVERHEAT!", text: "Sistem supraîncălzit. Mergi 3 pași înapoi.", move: -3 },
     { tile: 37, type: "trap", title: "⚠️ DATA LEAK!", text: "Ai pierdut pachete de date. -30 Energie.", effect: -30 },
 
     // 5 ELEMENTE POZITIVE (ATAC / BOOST)
     { tile: 7, type: "attack", title: "⚔️ HACKER SKILLS!", text: "Furi 25 XP de la un oponent activ!" },
-    { tile: 16, type: "boost", title: "🚀 OVERCLOCK!", text: "Primești 40 Energie bonus.", effect: 40 },
+    { tile: 16, type: "boost", title: "🚀 OVERCLOCK!", text: "Sistemul a fost accelerat. Primești 40 Energie bonus.", effect: 40 },
     { tile: 24, type: "attack", title: "⚔️ SQL INJECTION!", text: "Atacă baza de date a unui coleg! Furi 25 XP." },
     { tile: 30, type: "boost", title: "🔋 UPS ACTIV!", text: "Ești protejat. Mai dă o dată cu zarul.", action: "reroll" },
-    { tile: 39, type: "attack", title: "⚔️ ROOT ACCESS!", text: "Furi 25 XP de la liderul clasamentului!" }
+    { tile: 39, type: "attack", title: "⚔️ ROOT ACCESS!", text: "Furi 25 XP de la rețea (sau lider)!" }
 ];
 
 // ==========================================
-// 4. AUTENTIFICARE ȘI INIT
+// 4. AUTENTIFICARE ȘI INIȚIALIZARE
 // ==========================================
 document.getElementById('joinGameBtn').addEventListener('click', () => {
     let name = document.getElementById('playerNameInput').value.trim();
@@ -88,7 +92,10 @@ document.getElementById('joinGameBtn').addEventListener('click', () => {
     myPlayerId = "agent_" + Math.random().toString(36).substr(2, 9);
     localPlayer.name = name;
     
+    // Înregistrare în baza de date
     playersRef.child(myPlayerId).set(localPlayer);
+    
+    // Trecerea de la Login la Joc
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('gameUI').style.display = 'block';
     document.getElementById('displayName').innerText = name;
@@ -97,6 +104,7 @@ document.getElementById('joinGameBtn').addEventListener('click', () => {
     listenToNetwork(); 
 });
 
+// Sterge jucătorul din baza de date când închide pagina
 window.addEventListener('beforeunload', () => { 
     if (myPlayerId) playersRef.child(myPlayerId).remove(); 
 });
@@ -121,6 +129,7 @@ function initBoard() {
         cell.id = `cell-${i}`;
         cell.innerText = i === 0 ? "START" : `Zona ${i}`;
         
+        // Stilizare specială pentru evenimente
         let event = gameEvents.find(e => e.tile === i);
         if (event) {
             if (event.type === "question") { cell.style.borderColor = "#ff0055"; cell.innerText += "\n🔒"; }
@@ -134,7 +143,10 @@ function initBoard() {
 }
 
 function updateBoardLive(players) {
+    // Curăță pionii vechi
     document.querySelectorAll('.player-token').forEach(el => el.remove());
+    
+    // Desenează pionii noi
     for (let id in players) {
         let p = players[id];
         let cell = document.getElementById(`cell-${p.position}`);
@@ -142,10 +154,13 @@ function updateBoardLive(players) {
             let token = document.createElement('div');
             token.classList.add('player-token');
             token.innerText = p.name.charAt(0).toUpperCase();
-            token.style.backgroundColor = id === myPlayerId ? "#00ffcc" : "#ff0055";
+            token.style.backgroundColor = id === myPlayerId ? "#00ffcc" : "#ff0055"; // Verde pentru tine, Roșu pentru alții
+            
+            // Offset mic ca să nu se suprapună perfect dacă sunt mai mulți pe o căsuță
             let offset = Math.random() * 15;
             token.style.marginTop = offset + "px";
             token.style.marginLeft = offset + "px";
+            
             cell.appendChild(token);
         }
     }
@@ -155,6 +170,8 @@ function updateLeaderboard(players) {
     let list = document.getElementById('leaderboardList');
     if (!list) return;
     list.innerHTML = "";
+    
+    // Sortează descrescător după scor
     Object.values(players).sort((a, b) => b.score - a.score).forEach(p => {
         let li = document.createElement('li');
         li.innerText = `${p.name}: ${p.score} XP`;
@@ -164,11 +181,13 @@ function updateLeaderboard(players) {
 
 function syncPlayer() {
     document.getElementById('playerScore').innerText = localPlayer.score;
-    playersRef.child(myPlayerId).set(localPlayer);
+    if (myPlayerId) {
+        playersRef.child(myPlayerId).set(localPlayer);
+    }
 }
 
 // ==========================================
-// 6. ZAR ȘI SISTEM DE EVENIMENTE / PvP
+// 6. ZAR ȘI SISTEM DE EVENIMENTE
 // ==========================================
 document.getElementById('rollDiceBtn').addEventListener('click', () => {
     let roll = Math.floor(Math.random() * 6) + 1;
@@ -176,7 +195,7 @@ document.getElementById('rollDiceBtn').addEventListener('click', () => {
     
     localPlayer.position += roll;
     
-    // Buclă
+    // Logica de buclă (când ajunge la capătul tablei)
     if (localPlayer.position >= boardSize) {
         localPlayer.position = localPlayer.position - boardSize;
         localPlayer.score += 50; 
@@ -185,7 +204,7 @@ document.getElementById('rollDiceBtn').addEventListener('click', () => {
     
     syncPlayer();
     
-    // Verificăm PvP (Dacă pică peste alt jucător)
+    // Verificăm PvP (Dacă ai picat peste alt jucător)
     for (let id in allNetworkPlayers) {
         if (id !== myPlayerId && allNetworkPlayers[id].position === localPlayer.position && localPlayer.position !== 0) {
             alert(`⚔️ HACK ATACK! L-ai interceptat pe ${allNetworkPlayers[id].name}! Ai câștigat +15 Energie.`);
@@ -194,10 +213,10 @@ document.getElementById('rollDiceBtn').addEventListener('click', () => {
         }
     }
 
-    // Verificăm dacă există eveniment pe căsuță
+    // Verificăm dacă există eveniment pe căsuța curentă
     let event = gameEvents.find(e => e.tile === localPlayer.position);
     if (event) {
-        setTimeout(() => triggerEvent(event), 400);
+        setTimeout(() => triggerEvent(event), 400); // Mic delay vizual
     }
 });
 
@@ -207,7 +226,7 @@ document.getElementById('rollDiceBtn').addEventListener('click', () => {
 function performAttack(amount) {
     let opponents = Object.keys(allNetworkPlayers).filter(id => id !== myPlayerId);
     if (opponents.length > 0) {
-        // Alegem victima (cel mai mare scor sau primul găsit)
+        // Alegem victima (cel care are cel mai mare scor dintre oponenți)
         let targetId = opponents.sort((a, b) => allNetworkPlayers[b].score - allNetworkPlayers[a].score)[0];
         let targetName = allNetworkPlayers[targetId].name;
         let newTargetScore = (allNetworkPlayers[targetId].score || 100) - amount;
@@ -219,7 +238,7 @@ function performAttack(amount) {
         localPlayer.score += amount;
         alert(`⚔️ Atac reușit asupra lui ${targetName}! I-ai furat ${amount} XP.`);
     } else {
-        alert("Nu sunt alți agenți online pentru a fi atacați. Ai primit 10 XP bonus de la server.");
+        alert("Nu sunt alți agenți online pentru a fi atacați. Primești 10 XP bonus de la server.");
         localPlayer.score += 10;
     }
     syncPlayer();
@@ -229,6 +248,8 @@ function performAttack(amount) {
 // 8. MINI-JOC SNAKE (CANVAS)
 // ==========================================
 let snakeInterval;
+let snakeKeyHandler; // Păstrăm referința tastei pentru a o putea șterge corect
+
 function startSnakeGame() {
     const canvas = document.getElementById('miniGameCanvas');
     const ctx = canvas.getContext('2d');
@@ -241,27 +262,34 @@ function startSnakeGame() {
     let box = 15;
 
     // Control taste pentru Snake
-    const changeDir = (e) => {
-        if (e.key === "ArrowUp" && dy === 0) { dx = 0; dy = -1; e.preventDefault(); }
-        if (e.key === "ArrowDown" && dy === 0) { dx = 0; dy = 1; e.preventDefault(); }
-        if (e.key === "ArrowLeft" && dx === 0) { dx = -1; dy = 0; e.preventDefault(); }
-        if (e.key === "ArrowRight" && dx === 0) { dx = 1; dy = 0; e.preventDefault(); }
+    snakeKeyHandler = (e) => {
+        // Previne scroll-ul paginii când folosești săgețile
+        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+            e.preventDefault();
+        }
+        if (e.key === "ArrowUp" && dy === 0) { dx = 0; dy = -1; }
+        if (e.key === "ArrowDown" && dy === 0) { dx = 0; dy = 1; }
+        if (e.key === "ArrowLeft" && dx === 0) { dx = -1; dy = 0; }
+        if (e.key === "ArrowRight" && dx === 0) { dx = 1; dy = 0; }
     };
-    document.addEventListener('keydown', changeDir);
+    
+    document.addEventListener('keydown', snakeKeyHandler);
 
     snakeInterval = setInterval(() => {
         let head = {x: snake[0].x + dx, y: snake[0].y + dy};
         
-        // Verificare coliziuni
+        // Verificare coliziuni cu pereții sau propriul corp
         if (head.x < 0 || head.x >= 20 || head.y < 0 || head.y >= 20 || snake.some(s => s.x === head.x && s.y === head.y)) {
             clearInterval(snakeInterval);
             alert("Game Over! Nu ai atins 10 puncte. -20 Energie.");
             localPlayer.score -= 20;
-            finishMiniGame(changeDir);
+            finishMiniGame();
             return;
         }
 
         snake.unshift(head);
+        
+        // Dacă mănâncă
         if (head.x === food.x && head.y === food.y) {
             score++;
             food = {x: Math.floor(Math.random() * 20), y: Math.floor(Math.random() * 20)};
@@ -269,22 +297,23 @@ function startSnakeGame() {
                 clearInterval(snakeInterval);
                 alert("Sistem restaurat! Ai câștigat 20 Energie.");
                 localPlayer.score += 20;
-                finishMiniGame(changeDir);
+                finishMiniGame();
             }
         } else {
-            snake.pop();
+            snake.pop(); // Șterge coada dacă nu a mâncat
         }
 
-        // Desenare cadru
+        // Desenare cadru Snake
         ctx.fillStyle = "black"; ctx.fillRect(0, 0, 300, 300);
-        ctx.fillStyle = "red"; ctx.fillRect(food.x * box, food.y * box, box, box);
+        ctx.fillStyle = "red"; ctx.fillRect(food.x * box, food.y * box, box, box); // Mâncarea
         ctx.fillStyle = "#00ffcc";
-        snake.forEach(s => ctx.fillRect(s.x * box, s.y * box, box, box));
+        snake.forEach(s => ctx.fillRect(s.x * box, s.y * box, box, box)); // Șarpele
     }, 150);
 }
 
-function finishMiniGame(eventListener) {
-    document.removeEventListener('keydown', eventListener);
+function finishMiniGame() {
+    // Curățăm evenimentul de tastatură ca să nu intervină cu jocul principal
+    document.removeEventListener('keydown', snakeKeyHandler);
     document.getElementById('miniGameCanvas').style.display = "none";
     document.getElementById('challengeModal').classList.add('hidden');
     document.getElementById('rollDiceBtn').disabled = false;
@@ -292,7 +321,7 @@ function finishMiniGame(eventListener) {
 }
 
 // ==========================================
-// 9. MOTORUL DE EVENIMENTE (TRIGGER)
+// 9. MOTORUL DE EVENIMENTE (TRIGGER MODAL)
 // ==========================================
 function triggerEvent(eventData) {
     const modal = document.getElementById('challengeModal');
@@ -332,10 +361,13 @@ function triggerEvent(eventData) {
         performAttack(25);
     }
     else {
-        // Pentru capcane (trap) și boost-uri (boost) care doar afișează un mesaj
+        // Pentru capcane (trap) și boost-uri (boost) care doar afișează un mesaj și mută/scad scorul
         alert(eventData.title + "\n" + eventData.text);
         if (eventData.effect) localPlayer.score += eventData.effect;
-        if (eventData.move) localPlayer.position += eventData.move;
+        if (eventData.move) {
+            localPlayer.position += eventData.move;
+            if(localPlayer.position < 0) localPlayer.position = 0; // Nu vrem să iasă de pe tablă
+        }
         syncPlayer();
     }
 }
