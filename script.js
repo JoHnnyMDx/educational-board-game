@@ -19,7 +19,8 @@ let myPlayerId = "";
 let localPlayer = { name: "", position: 0, score: 100 };
 const boardSize = 40; 
 let allNetworkPlayers = {};
-let currentActiveMinigame = ""; // Tine minte in ce joc suntem blocati
+let currentActiveMinigame = ""; 
+let localTileMap = {}; // Harta va fi generată dinamic
 
 // ==========================================
 // 2. SISTEM ANTI-FRAUDĂ
@@ -37,10 +38,7 @@ document.addEventListener('keydown', function(event) {
 document.addEventListener('selectstart', event => event.preventDefault());
 
 // ==========================================
-// 3. BAZA DE DATE - ÎNTREBĂRI ALEATORII
-// ==========================================
-// ==========================================
-// 3. BAZA DE DATE MASIVĂ - 100 ÎNTREBĂRI
+// 3. BAZA DE DATE MASIVĂ - ÎNTREBĂRI
 // ==========================================
 const questionsDB = [
     // --- Cap 6.1 Schema funcțională ---
@@ -176,19 +174,61 @@ const triviaDB = [
     { q: "Care limbaj de programare este folosit pentru a stiliza (da culoare) paginilor web?", options: ["Python", "C++", "CSS"], correct: 2 },
     { q: "Care este simbolul folosit pentru a scrie un comentariu pe un singur rând în C++?", options: ["//", "
 
-// Maparea Tablei (Ce tip de eveniment este pe fiecare căsuță)
-const tileMap = {
-    3: 'question', 6: 'trivia', 9: 'minigame', 12: 'attack', 15: 'question',
-    18: 'boost', 21: 'minigame', 24: 'question', 27: 'trivia', 30: 'minigame',
-    33: 'attack', 36: 'question', 39: 'boost'
-};
+// ==========================================
+// 4. GENERATOR ALEATORIU DE HARTĂ
+// ==========================================
+function generateRandomBoard() {
+    let eventsPool = [];
+    
+    // Distribuim cele 39 de căsuțe (din 40, fiindcă prima e START)
+    for(let i=0; i<18; i++) eventsPool.push('question');
+    for(let i=0; i<6; i++) eventsPool.push('trivia');
+    for(let i=0; i<6; i++) eventsPool.push('minigame');
+    for(let i=0; i<5; i++) eventsPool.push('attack');
+    for(let i=0; i<4; i++) eventsPool.push('boost');
+
+    // Amestecăm array-ul (Shuffle algoritmic Fisher-Yates)
+    for (let i = eventsPool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [eventsPool[i], eventsPool[j]] = [eventsPool[j], eventsPool[i]];
+    }
+
+    // Asociem evenimentele noilor celule
+    localTileMap = {};
+    for(let i = 1; i < boardSize; i++) {
+        localTileMap[i] = eventsPool[i - 1];
+    }
+    
+    // Actualizăm interfața grafică a tablei curente
+    updateBoardVisuals();
+}
+
+function updateBoardVisuals() {
+    for(let i = 1; i < boardSize; i++) {
+        let cell = document.getElementById(`cell-${i}`);
+        if(!cell) continue;
+        
+        let type = localTileMap[i];
+        
+        // Resetăm vizualul de bază
+        cell.innerText = `Zona ${i}`;
+        cell.style.borderColor = "#30363d";
+        
+        // Aplicăm noul stil
+        if (type === 'question' || type === 'trivia') { cell.style.borderColor = "#ff0055"; cell.innerText += "\n❓"; }
+        else if (type === 'minigame') { cell.style.borderColor = "#ffaa00"; cell.innerText += "\n🕹️"; }
+        else if (type === 'attack') { cell.style.borderColor = "#9900ff"; cell.innerText += "\n⚔️"; }
+        else if (type === 'boost') { cell.style.borderColor = "#00ffcc"; cell.innerText += "\n🟢"; }
+    }
+}
 
 // ==========================================
-// 4. AUTENTIFICARE
+// 5. AUTENTIFICARE ȘI INIȚIALIZARE TABLĂ
 // ==========================================
 document.getElementById('joinGameBtn').addEventListener('click', () => {
     let name = document.getElementById('playerNameInput').value.trim();
     if (name.length < 3) return alert("Introdu un nume valid!");
+    
     myPlayerId = "agent_" + Math.random().toString(36).substr(2, 9);
     localPlayer.name = name;
     playersRef.child(myPlayerId).set(localPlayer);
@@ -196,39 +236,35 @@ document.getElementById('joinGameBtn').addEventListener('click', () => {
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('gameUI').style.display = 'block';
     document.getElementById('displayName').innerText = name;
+    
     initBoard();
     listenToNetwork(); 
 });
 window.addEventListener('beforeunload', () => { if (myPlayerId) playersRef.child(myPlayerId).remove(); });
 
-// ==========================================
-// 5. MOTOR MULTIPLAYER
-// ==========================================
+function initBoard() {
+    const gameBoard = document.getElementById('gameBoard');
+    gameBoard.innerHTML = '';
+    
+    // 1. Creăm celulele HTML goale o singură dată
+    for (let i = 0; i < boardSize; i++) {
+        let cell = document.createElement('div');
+        cell.classList.add('cell');
+        cell.id = `cell-${i}`;
+        cell.innerText = i === 0 ? "START" : `Zona ${i}`;
+        gameBoard.appendChild(cell);
+    }
+    
+    // 2. Generăm structura hărții aleatorii pentru acest jucător
+    generateRandomBoard();
+}
+
 function listenToNetwork() {
     playersRef.on("value", (snapshot) => {
         allNetworkPlayers = snapshot.val() || {};
         updateBoardLive(allNetworkPlayers);
         updateLeaderboard(allNetworkPlayers);
     });
-}
-
-function initBoard() {
-    const gameBoard = document.getElementById('gameBoard');
-    gameBoard.innerHTML = '';
-    for (let i = 0; i < boardSize; i++) {
-        let cell = document.createElement('div');
-        cell.classList.add('cell');
-        cell.id = `cell-${i}`;
-        cell.innerText = i === 0 ? "START" : `Zona ${i}`;
-        
-        let type = tileMap[i];
-        if (type === 'question' || type === 'trivia') { cell.style.borderColor = "#ff0055"; cell.innerText += "\n❓"; }
-        else if (type === 'minigame') { cell.style.borderColor = "#ffaa00"; cell.innerText += "\n🕹️"; }
-        else if (type === 'attack') { cell.style.borderColor = "#9900ff"; cell.innerText += "\n⚔️"; }
-        else if (type === 'boost') { cell.style.borderColor = "#00ffcc"; cell.innerText += "\n🟢"; }
-        
-        gameBoard.appendChild(cell);
-    }
 }
 
 function updateBoardLive(players) {
@@ -265,30 +301,36 @@ function syncPlayer() {
 }
 
 // ==========================================
-// 6. ZAR ȘI DECLANȘARE EVENIMENTE
+// 6. ZAR ȘI DECLANȘARE EVENIMENTE DINAMICE
 // ==========================================
 document.getElementById('rollDiceBtn').addEventListener('click', () => {
     let roll = Math.floor(Math.random() * 6) + 1;
     document.getElementById('diceResult').innerText = `Zar: 🎲 ${roll}`;
     
     localPlayer.position += roll;
+    
+    // Dacă am terminat un tur (Buclă Completă)
     if (localPlayer.position >= boardSize) {
         localPlayer.position -= boardSize;
         localPlayer.score += 50; 
-        alert("🔄 Ciclu completat! Bonus: +50 Energie.");
+        alert("🔄 CICLU COMPLETAT! Harta sistemului a fost regenerată. Bonus: +50 Energie.");
+        
+        // RE-GENERĂM HARTA COMPLETA LA FIECARE TUR PARCURS
+        generateRandomBoard();
     }
     syncPlayer();
     
-    // Verificare PvP
+    // Verificare PvP (Luptă live pe aceeași celulă)
     for (let id in allNetworkPlayers) {
         if (id !== myPlayerId && allNetworkPlayers[id].position === localPlayer.position && localPlayer.position !== 0) {
-            alert(`⚔️ HACK ATACK! L-ai interceptat pe ${allNetworkPlayers[id].name}! +15 Energie.`);
+            alert(`⚔️ HACK ATACK! L-ai interceptat pe ${allNetworkPlayers[id].name}! Ai furat +15 Energie.`);
             localPlayer.score += 15;
             syncPlayer();
         }
     }
 
-    let eventType = tileMap[localPlayer.position];
+    // Extragem evenimentul din harta random a jucătorului
+    let eventType = localTileMap[localPlayer.position];
     if (eventType) setTimeout(() => handleTileEvent(eventType), 300);
 });
 
@@ -299,7 +341,7 @@ function handleTileEvent(type) {
     const ansContainer = document.getElementById('answersContainer');
     const retryBtn = document.getElementById('retryBtn');
     
-    // Reset Modal
+    // Reset complet Modal
     document.getElementById('miniGameArea').style.display = 'none';
     document.getElementById('miniGameCanvas').style.display = 'none';
     document.getElementById('bugGameContainer').style.display = 'none';
@@ -311,7 +353,8 @@ function handleTileEvent(type) {
 
     if (type === 'question' || type === 'trivia') {
         let db = type === 'question' ? questionsDB : triviaDB;
-        let qData = db[Math.floor(Math.random() * db.length)];
+        let qData = db[Math.floor(Math.random() * db.length)]; // Întrebare Random din pool
+        
         title.innerText = type === 'question' ? "[Teorie]" : "[Cultură Generală]";
         text.innerText = qData.q;
         
@@ -321,14 +364,16 @@ function handleTileEvent(type) {
             btn.innerText = opt;
             btn.onclick = () => {
                 if (index === qData.correct) {
-                    alert("Corect! +20 XP");
+                    alert("✅ Corect! +20 XP");
                     localPlayer.score += 20;
                     modal.classList.add('hidden');
                     document.getElementById('rollDiceBtn').disabled = false;
                 } else {
-                    alert("Greșit! Ești blocat, încearcă altă variantă. (-5 XP)");
-                    localPlayer.score -= 5;
-                    btn.disabled = true; // Dezactivează butonul greșit
+                    alert("❌ Răspuns greșit! Ai pierdut 10 XP.");
+                    localPlayer.score -= 10;
+                    ansContainer.innerHTML = ''; 
+                    retryBtn.style.display = 'block'; 
+                    retryBtn.onclick = () => handleTileEvent(type); // O NOUĂ ÎNTREBARE
                 }
                 syncPlayer();
             };
@@ -368,7 +413,7 @@ function performAttack(amount) {
 }
 
 // ==========================================
-// 7. MOTOR MINI-JOCURI (CU BLOCARE)
+// 7. MOTOR MINI-JOCURI (ESCAPE ROOM)
 // ==========================================
 function launchMinigame(gameType) {
     const modal = document.getElementById('challengeModal');
@@ -396,7 +441,6 @@ function launchMinigame(gameType) {
     }
 }
 
-// Funcții ajutătoare pentru finalizare jocuri
 function minigameWin() {
     alert("✅ Succes! Ai deblocat sistemul și primești +20 XP.");
     localPlayer.score += 20;
@@ -410,7 +454,6 @@ function minigameLoss() {
     localPlayer.score -= 10;
     syncPlayer();
     
-    // Ascundem jocurile și arătăm butonul de reîncercare
     document.getElementById('miniGameCanvas').style.display = 'none';
     document.getElementById('bugGameContainer').style.display = 'none';
     document.getElementById('memoryGameContainer').style.display = 'none';
@@ -462,7 +505,7 @@ function startSnakeGame() {
         ctx.fillStyle = "black"; ctx.fillRect(0, 0, 300, 300);
         ctx.fillStyle = "red"; ctx.fillRect(food.x * box, food.y * box, box, box);
         ctx.fillStyle = "#00ffcc"; snake.forEach(s => ctx.fillRect(s.x * box, s.y * box, box, box));
-    }, 120); // Puțin mai rapid
+    }, 120); 
 }
 
 // --- JOC 2: BUG SMASHER ---
@@ -516,7 +559,7 @@ function startMemoryGame() {
     
     const symbols = ['ROM', 'RAM', 'CPU', 'LAN'];
     let cardsData = [...symbols, ...symbols];
-    cardsData.sort(() => Math.random() - 0.5); // Shuffle
+    cardsData.sort(() => Math.random() - 0.5); 
     
     let hasFlippedCard = false; let lockBoard = false;
     let firstCard, secondCard; let matchedPairs = 0;
