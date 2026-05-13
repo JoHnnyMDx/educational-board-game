@@ -87,18 +87,18 @@ const triviaDB = [
 ];
 
 // ==========================================
-// 4. GENERATOR ALEATORIU DE HARTĂ
+// 4. GENERATOR ALEATORIU DE HARTĂ (ACTUALIZAT)
 // ==========================================
 function generateRandomBoard() {
     let eventsPool = [];
     
-    // Distribuim cele 39 de căsuțe (din 40, fiindcă prima e START)
-    for(let i=0; i<10; i++) eventsPool.push('question');
-    for(let i=0; i<4; i++) eventsPool.push('trivia');
-    for(let i=0; i<4; i++) eventsPool.push('minigame');
-    for(let i=0; i<5; i++) eventsPool.push('attack');
-    for(let i=0; i<4; i++) eventsPool.push('boost');
-    for(let i=0; i<12; i++) eventsPool.push('empty');
+    // Distribuim cele 39 de căsuțe:
+    for(let i=0; i<10; i++) eventsPool.push('question'); // 10 Întrebări
+    for(let i=0; i<3; i++) eventsPool.push('trivia');    // 3 Curiozități
+    for(let i=0; i<4; i++) eventsPool.push('minigame');  // 4 Mini-jocuri
+    for(let i=0; i<3; i++) eventsPool.push('attack');    // 3 Atacuri
+    for(let i=0; i<3; i++) eventsPool.push('boost');     // 3 Bonusuri
+    for(let i=0; i<16; i++) eventsPool.push('empty');    // 16 CĂSUȚE GOALE (Liber)
 
     // Amestecăm array-ul (Shuffle algoritmic Fisher-Yates)
     for (let i = eventsPool.length - 1; i > 0; i--) {
@@ -132,6 +132,7 @@ function updateBoardVisuals() {
         else if (type === 'minigame') { cell.style.borderColor = "#ffaa00"; cell.innerText += "\n🕹️"; }
         else if (type === 'attack') { cell.style.borderColor = "#9900ff"; cell.innerText += "\n⚔️"; }
         else if (type === 'boost') { cell.style.borderColor = "#00ffcc"; cell.innerText += "\n🟢"; }
+        // Căsuțele 'empty' rămân cu stilul de bază
     }
 }
 
@@ -214,7 +215,7 @@ function syncPlayer() {
 }
 
 // ==========================================
-// 6. ZAR ȘI DECLANȘARE EVENIMENTE DINAMICE
+// 6. ZAR ȘI DECLANȘARE EVENIMENTE DINAMICE (ACTUALIZAT)
 // ==========================================
 document.getElementById('rollDiceBtn').addEventListener('click', () => {
     let roll = Math.floor(Math.random() * 6) + 1;
@@ -244,7 +245,11 @@ document.getElementById('rollDiceBtn').addEventListener('click', () => {
 
     // Extragem evenimentul din harta random a jucătorului
     let eventType = localTileMap[localPlayer.position];
-    if (eventType) setTimeout(() => handleTileEvent(eventType), 300);
+    
+    // Declanșăm evenimentul DOAR dacă există și NU este 'empty'
+    if (eventType && eventType !== 'empty') {
+        setTimeout(() => handleTileEvent(eventType), 300);
+    }
 });
 
 function handleTileEvent(type) {
