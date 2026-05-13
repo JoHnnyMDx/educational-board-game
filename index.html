@@ -38,15 +38,23 @@
     </div>
 
     <div id="challengeModal" class="modal hidden">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width: 500px;">
             <h2 id="challengeTitle">Provocare!</h2>
             <p id="challengeText">...</p>
             
-            <canvas id="miniGameCanvas" width="300" height="300" style="display:none; background: #000; margin: 10px auto; border: 2px solid #00ffcc;"></canvas>
+            <div id="miniGameArea" style="display:none; position: relative; margin: 15px auto;">
+                <canvas id="miniGameCanvas" width="300" height="300" style="display:none; background: #000; margin: 0 auto; border: 2px solid #00ffcc;"></canvas>
+                
+                <div id="bugGameContainer" style="display:none; width: 300px; height: 300px; background: #111; margin: 0 auto; border: 2px solid #f87171; position: relative; overflow: hidden; cursor: crosshair;"></div>
+                
+                <div id="memoryGameContainer" style="display:none; width: 320px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 0 auto;"></div>
+                
+                <p id="miniGameStats" style="font-weight:bold; color:#00ffcc; margin-top:10px; display:none;"></p>
+            </div>
             
             <div id="answersContainer" class="answers"></div>
             
-            <button id="closeModalBtn" class="answer-btn" style="display:none;">Închide</button>
+            <button id="retryBtn" class="answer-btn" style="display:none; background-color: #f87171; color: black; font-weight: bold;">❌ Eșec! Reîncearcă (-10 XP)</button>
         </div>
     </div>
 
