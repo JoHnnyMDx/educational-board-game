@@ -24,20 +24,30 @@
             <div>
                 <p class="eyebrow">NeoCity Live Network</p>
                 <h1>Digital Heist Academy</h1>
-                <p class="muted">Scor țintă: <strong><span id="winningScoreLabel">700</span> XP</strong>. Atenție: greșelile consecutive cresc penalizarea.</p>
+                <p class="muted">Durată: <strong>30 minute</strong>. Final la timp sau victorie rapidă după minutul 20.</p>
             </div>
 
             <div class="stats-grid">
                 <div class="stat-card"><span>Agent</span><strong id="displayName">---</strong></div>
                 <div class="stat-card"><span>Energie</span><strong><span id="playerScore">100</span> XP</strong></div>
+                <div class="stat-card"><span>Timp rămas</span><strong id="sessionTimerLabel">30:00</strong></div>
                 <div class="stat-card"><span>Nivel</span><strong id="playerLevel">1</strong></div>
+                <div class="stat-card"><span>Fază</span><strong id="missionPhaseLabel">Nivel 1: Recrut</strong></div>
                 <div class="stat-card"><span>Greșeli</span><strong id="wrongStreakLabel">0</strong></div>
                 <div class="stat-card boss-stat"><span>AI Core Boss</span><strong><span id="bossHpLabel">300</span>/300 HP</strong></div>
+                <div class="stat-card"><span>Chei Boss</span><strong id="bossKeysLabel">0</strong></div>
+                <div class="stat-card"><span>Scor victorie rapidă</span><strong><span id="winningScoreLabel">1200</span> XP</strong></div>
             </div>
+
+            <div class="session-progress" aria-label="Progres sesiune">
+                <div id="sessionProgressFill"></div>
+            </div>
+            <p id="fastWinLabel" class="fast-win-label">Victorie rapidă după 20:00</p>
 
             <div class="actions-row">
                 <button id="rollDiceBtn">Aruncă Zarul 🎲</button>
                 <button id="rulesBtn" class="secondary-btn">Reguli rapide</button>
+                <button id="resetArenaBtn" class="secondary-btn danger-outline">Reset Arena</button>
             </div>
             <p id="diceResult" class="dice-result">Pregătit pentru misiune.</p>
         </section>
