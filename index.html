@@ -13,24 +13,32 @@
         <div class="modal-content login-card">
             <p class="eyebrow">Digital Heist Academy</p>
             <h2>Autentificare Sistem</h2>
-            <p class="muted">Intră în arena live, colectează XP și rezolvă provocări de informatică.</p>
-            <input type="text" id="playerNameInput" placeholder="Numele tău (ex. Ion Popescu)" maxlength="24" autocomplete="off" />
+            <p class="muted">Intră în arena live, colectează XP, atacă adversari și rezolvă misiuni de informatică.</p>
+            <input type="text" id="playerNameInput" placeholder="Numele tău (ex. Ion Popescu)" maxlength="24" autocomplete="off">
             <button id="joinGameBtn" class="answer-btn primary-action">Conectare la Rețea</button>
         </div>
     </div>
 
-    <main id="gameUI" class="app-shell" style="display: none;">
+    <main id="gameUI" class="app-shell" style="display:none;">
         <section class="hud glass-panel">
             <div>
                 <p class="eyebrow">NeoCity Live Network</p>
                 <h1>Digital Heist Academy</h1>
+                <p class="muted">Scor țintă: <strong><span id="winningScoreLabel">700</span> XP</strong>. Atenție: greșelile consecutive cresc penalizarea.</p>
             </div>
-            <div class="stats">
-                <p>Agent: <span id="displayName">---</span></p>
-                <p>Energie: <span id="playerScore">100</span> XP</p>
-                <p>Nivel: <span id="playerLevel">1</span></p>
+
+            <div class="stats-grid">
+                <div class="stat-card"><span>Agent</span><strong id="displayName">---</strong></div>
+                <div class="stat-card"><span>Energie</span><strong><span id="playerScore">100</span> XP</strong></div>
+                <div class="stat-card"><span>Nivel</span><strong id="playerLevel">1</strong></div>
+                <div class="stat-card"><span>Greșeli</span><strong id="wrongStreakLabel">0</strong></div>
+                <div class="stat-card boss-stat"><span>AI Core Boss</span><strong><span id="bossHpLabel">300</span>/300 HP</strong></div>
             </div>
-            <button id="rollDiceBtn">Aruncă Zarul 🎲</button>
+
+            <div class="actions-row">
+                <button id="rollDiceBtn">Aruncă Zarul 🎲</button>
+                <button id="rulesBtn" class="secondary-btn">Reguli rapide</button>
+            </div>
             <p id="diceResult" class="dice-result">Pregătit pentru misiune.</p>
         </section>
 
@@ -45,19 +53,24 @@
 
     <div id="challengeModal" class="modal hidden">
         <div class="modal-content challenge-card">
-            <p class="eyebrow">Mission Node</p>
+            <p class="eyebrow" id="challengeEyebrow">Mission Node</p>
             <h2 id="challengeTitle">Provocare!</h2>
             <p id="challengeText">...</p>
-            
+
             <div id="miniGameArea" class="mini-game-area" style="display:none;">
                 <canvas id="miniGameCanvas" width="300" height="300"></canvas>
                 <div id="bugGameContainer"></div>
                 <div id="memoryGameContainer"></div>
                 <p id="miniGameStats"></p>
             </div>
-            
+
             <div id="answersContainer" class="answers"></div>
-            <button id="retryBtn" class="answer-btn danger-action" style="display:none;">❌ Eșec! Reîncearcă (-10 XP)</button>
+
+            <button id="voiceChallengeBtn" class="answer-btn voice-action" style="display:none;">🎙️ Pornește microfonul</button>
+            <p id="voiceResult" class="voice-result"></p>
+
+            <button id="retryBtn" class="answer-btn danger-action" style="display:none;">❌ Reîncearcă misiunea</button>
+            <button id="closeModalBtn" class="answer-btn secondary-action" style="display:none;">Închide</button>
         </div>
     </div>
 
