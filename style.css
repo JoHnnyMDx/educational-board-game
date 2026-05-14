@@ -463,28 +463,153 @@ h1, h2, h3 {
     #bugGameContainer, #miniGameCanvas { width: 280px; height: 280px; }
 }
 
-
-.session-progress {
-    width: min(560px, 100%);
-    height: 12px;
-    border: 1px solid var(--cyan);
-    border-radius: 999px;
-    margin: 12px auto 6px;
-    overflow: hidden;
-    background: rgba(255,255,255,0.06);
+/* ==========================================
+   V4: Clase, Skill Tree, Evenimente Globale, Boss pe hartă
+========================================== */
+.wide-login {
+    max-width: 760px;
 }
 
-#sessionProgressFill {
-    height: 100%;
-    width: 0%;
-    background: linear-gradient(90deg, var(--cyan), var(--pink));
-    transition: width 0.4s ease;
+.class-title {
+    margin: 14px 0 10px;
+    color: var(--text);
+    font-size: 16px;
 }
 
-.fast-win-label {
+.class-picker {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin: 12px 0 18px;
+}
+
+.class-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 12px;
+    cursor: pointer;
+    transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 154px;
+}
+
+.class-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--cyan);
+    box-shadow: 0 0 18px rgba(0,255,204,.15);
+}
+
+.class-card input {
+    align-self: flex-start;
+    accent-color: var(--cyan);
+}
+
+.class-card:has(input:checked) {
+    border-color: var(--cyan);
+    box-shadow: 0 0 24px rgba(0,255,204,.28);
+}
+
+.class-icon {
+    font-size: 30px;
+}
+
+.class-card strong {
+    color: var(--text);
+}
+
+.class-card small {
+    color: var(--muted);
+    line-height: 1.3;
+}
+
+.extended-stats {
+    grid-template-columns: repeat(5, minmax(120px, 1fr));
+}
+
+.session-row {
+    display: grid;
+    grid-template-columns: 140px 1fr 240px;
+    gap: 12px;
+    align-items: center;
+    margin: 14px 0 18px;
+}
+
+.timer-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 10px;
+}
+
+.timer-card span {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.timer-card strong {
     color: var(--yellow);
-    font-size: 13px;
-    margin: 6px 0 14px;
+    font-size: 22px;
+}
+
+.small-timer span {
+    color: var(--cyan);
+    font-weight: 800;
+}
+
+.progress-wrap {
+    height: 16px;
+    background: #07111f;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, var(--cyan), var(--pink));
+    transition: width .4s ease;
+}
+
+.glass-panel-lite {
+    background: rgba(15,23,32,.8);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 10px 14px;
+    margin: 12px 0;
+    color: var(--muted);
+}
+
+.glass-panel-lite strong {
+    color: var(--cyan);
+}
+
+.event-stat strong {
+    color: var(--yellow);
+}
+
+.event-solar {
+    border-color: #38bdf8;
+    box-shadow: 0 0 18px rgba(56,189,248,.25);
+}
+
+.event-virus {
+    border-color: #22c55e;
+    box-shadow: 0 0 18px rgba(34,197,94,.25);
+}
+
+.event-backup {
+    border-color: var(--cyan);
+    box-shadow: 0 0 18px rgba(0,255,204,.25);
+}
+
+.event-firewall {
+    border-color: var(--red);
+    box-shadow: 0 0 18px rgba(248,113,113,.3);
 }
 
 .danger-outline {
@@ -493,6 +618,54 @@ h1, h2, h3 {
     border: 1px solid var(--red);
 }
 
-.danger-outline:hover:not(:disabled) {
-    box-shadow: 0 0 18px rgba(248,113,113,0.35);
+.boss-map-token {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: #2b0b0b;
+    border: 2px solid var(--red);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: absolute;
+    left: 5px;
+    bottom: 5px;
+    z-index: 11;
+    box-shadow: 0 0 18px rgba(248,113,113,.85);
+    animation: bossMovePulse 1s infinite;
+}
+
+@keyframes bossMovePulse {
+    0%, 100% { transform: scale(1) rotate(0deg); }
+    50% { transform: scale(1.14) rotate(-8deg); }
+}
+
+.hint-box {
+    background: rgba(96,165,250,.12);
+    border: 1px solid #60a5fa;
+    color: #bfdbfe;
+    border-radius: 12px;
+    padding: 10px;
+    margin: 10px 0;
+    font-weight: 800;
+}
+
+.skill-choice-btn {
+    text-align: left;
+    line-height: 1.35;
+}
+
+.player-token {
+    font-size: 16px;
+}
+
+@media (max-width: 950px) {
+    .class-picker { grid-template-columns: repeat(2, 1fr); }
+    .session-row { grid-template-columns: 1fr; }
+    .extended-stats { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 520px) {
+    .class-picker { grid-template-columns: 1fr; }
+    .extended-stats { grid-template-columns: 1fr; }
 }
