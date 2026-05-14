@@ -20,21 +20,92 @@ let localPlayer = { name: "", position: 0, score: 100 };
 const boardSize = 40; 
 let allNetworkPlayers = {};
 let currentActiveMinigame = ""; 
-let localTileMap = {}; 
+let localTileMap = {};
+let gameLocked = false;
+
+const tileMeta = {
+    question: { icon: "❓", label: "Quiz", className: "tile-question" },
+    trivia: { icon: "💡", label: "Trivia", className: "tile-trivia" },
+    minigame: { icon: "🕹️", label: "Mini", className: "tile-minigame" },
+    attack: { icon: "⚔️", label: "Atac", className: "tile-attack" },
+    boost: { icon: "🟢", label: "Boost", className: "tile-boost" },
+    empty: { icon: "", label: "Safe", className: "tile-empty" }
+};
+
+function clampScore(value) {
+    return Math.max(0, Number(value) || 0);
+}
+
+function getLevel(score) {
+    return Math.floor(clampScore(score) / 100) + 1;
+}
+
+function cleanName(name) {
+    return name.replace(/[<>]/g, "").slice(0, 24).trim();
+}
+
+function setGameLocked(value) {
+    gameLocked = value;
+    const rollBtn = document.getElementById('rollDiceBtn');
+    if (rollBtn) rollBtn.disabled = value;
+}
+
+function playTone(type = "click") {
+    try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const freq = { click: 220, win: 680, loss: 120, dice: 420, attack: 90, boost: 760 }[type] || 220;
+        osc.frequency.value = freq;
+        osc.type = type === "attack" ? "sawtooth" : "square";
+        gain.gain.setValueAtTime(0.04, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.18);
+    } catch (e) {}
+}
+
+function resetChallengeUI() {
+    document.getElementById('miniGameArea').style.display = 'none';
+    document.getElementById('miniGameCanvas').style.display = 'none';
+    document.getElementById('bugGameContainer').style.display = 'none';
+    document.getElementById('memoryGameContainer').style.display = 'none';
+    document.getElementById('miniGameStats').style.display = 'none';
+    document.getElementById('answersContainer').innerHTML = '';
+    document.getElementById('retryBtn').style.display = 'none';
+}
+
 
 // ==========================================
-// 2. SISTEM ANTI-FRAUDĂ
+// 2. SISTEM ANTI-FRAUDĂ / DISCIPLINĂ DE JOC
 // ==========================================
-document.addEventListener('contextmenu', event => event.preventDefault());
-document.addEventListener('keydown', function(event) {
-    if (event.key === 'PrintScreen' || event.keyCode === 123 || 
-        (event.ctrlKey && (event.key === 'c' || event.key === 'v' || event.key === 's'))) {
-        event.preventDefault();
-        alert('⚠️ SECURITY BREACH: Tentativă de fraudă! Ai pierdut 15 Energie.');
-        localPlayer.score -= 15;
+document.addEventListener('contextmenu', event => {
+    event.preventDefault();
+    if (myPlayerId) {
+        alert('⚠️ SECURITY BREACH: click dreapta blocat. -5 XP.');
+        localPlayer.score = clampScore(localPlayer.score - 5);
         syncPlayer();
     }
 });
+
+document.addEventListener('keydown', function(event) {
+    const blockedShortcut = event.key === 'F12' ||
+        (event.ctrlKey && ['s', 'u'].includes(event.key.toLowerCase())) ||
+        (event.ctrlKey && event.shiftKey && ['i', 'j', 'c'].includes(event.key.toLowerCase()));
+
+    if (blockedShortcut) {
+        event.preventDefault();
+        if (myPlayerId) {
+            alert('⚠️ SECURITY BREACH: tentativă de ocolire a jocului. -10 XP.');
+            localPlayer.score = clampScore(localPlayer.score - 10);
+            syncPlayer();
+        }
+    }
+});
+
 document.addEventListener('selectstart', event => event.preventDefault());
 
 // ==========================================
@@ -194,13 +265,10 @@ function updateBoardVisuals() {
     for(let i = 1; i < boardSize; i++) {
         let cell = document.getElementById(`cell-${i}`);
         if(!cell) continue;
-        let type = localTileMap[i];
-        cell.innerText = `Zona ${i}`;
-        cell.style.borderColor = "#30363d";
-        if (type === 'question' || type === 'trivia') { cell.style.borderColor = "#ff0055"; cell.innerText += "\n❓"; }
-        else if (type === 'minigame') { cell.style.borderColor = "#ffaa00"; cell.innerText += "\n🕹️"; }
-        else if (type === 'attack') { cell.style.borderColor = "#9900ff"; cell.innerText += "\n⚔️"; }
-        else if (type === 'boost') { cell.style.borderColor = "#00ffcc"; cell.innerText += "\n🟢"; }
+        let type = localTileMap[i] || 'empty';
+        let meta = tileMeta[type] || tileMeta.empty;
+        cell.className = `cell ${meta.className}`;
+        cell.innerHTML = `<span class="zone-title">Zona ${i}</span><span class="zone-icon">${meta.icon}</span><small>${meta.label}</small>`;
     }
 }
 
@@ -208,10 +276,10 @@ function updateBoardVisuals() {
 // 5. AUTENTIFICARE ȘI LOGICA MULTIPLAYER
 // ==========================================
 document.getElementById('joinGameBtn').addEventListener('click', () => {
-    let name = document.getElementById('playerNameInput').value.trim();
+    let name = cleanName(document.getElementById('playerNameInput').value);
     if (name.length < 3) return alert("Introdu un nume valid!");
     myPlayerId = "agent_" + Math.random().toString(36).substr(2, 9);
-    localPlayer.name = name;
+    localPlayer = { name, position: 0, score: 100, level: 1, joinedAt: firebase.database.ServerValue.TIMESTAMP };
     playersRef.child(myPlayerId).set(localPlayer);
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('gameUI').style.display = 'block';
@@ -220,7 +288,10 @@ document.getElementById('joinGameBtn').addEventListener('click', () => {
     listenToNetwork(); 
 });
 
-window.addEventListener('beforeunload', () => { if (myPlayerId) playersRef.child(myPlayerId).remove(); });
+window.addEventListener('beforeunload', () => {
+    playersRef.off();
+    if (myPlayerId) playersRef.child(myPlayerId).remove();
+});
 
 function initBoard() {
     const gameBoard = document.getElementById('gameBoard');
@@ -229,7 +300,7 @@ function initBoard() {
         let cell = document.createElement('div');
         cell.classList.add('cell');
         cell.id = `cell-${i}`;
-        cell.innerText = i === 0 ? "START" : `Zona ${i}`;
+        cell.innerHTML = i === 0 ? '<span class="zone-title">START</span><span class="zone-icon">🚀</span><small>Launch</small>' : `<span class="zone-title">Zona ${i}</span>`;
         gameBoard.appendChild(cell);
     }
     generateRandomBoard();
@@ -245,19 +316,27 @@ function listenToNetwork() {
 
 function updateBoardLive(players) {
     document.querySelectorAll('.player-token').forEach(el => el.remove());
+    const playersByCell = {};
     for (let id in players) {
-        let p = players[id];
-        let cell = document.getElementById(`cell-${p.position}`);
-        if (cell) {
+        const p = players[id];
+        if (!playersByCell[p.position]) playersByCell[p.position] = [];
+        playersByCell[p.position].push({ id, ...p });
+    }
+
+    Object.keys(playersByCell).forEach(position => {
+        const cell = document.getElementById(`cell-${position}`);
+        if (!cell) return;
+        playersByCell[position].forEach((p, index) => {
             let token = document.createElement('div');
             token.classList.add('player-token');
-            token.innerText = p.name.charAt(0).toUpperCase();
-            token.style.backgroundColor = id === myPlayerId ? "#00ffcc" : "#ff0055";
-            token.style.marginTop = (Math.random() * 15) + "px";
-            token.style.marginLeft = (Math.random() * 15) + "px";
+            token.title = `${p.name} | ${p.score} XP`;
+            token.innerText = (p.name || '?').charAt(0).toUpperCase();
+            token.style.backgroundColor = p.id === myPlayerId ? "#00ffcc" : "#ff0055";
+            token.style.color = p.id === myPlayerId ? "#00110d" : "#ffffff";
+            token.style.transform = `translate(${(index % 3) * 18}px, ${Math.floor(index / 3) * 18}px)`;
             cell.appendChild(token);
-        }
-    }
+        });
+    });
 }
 
 function updateLeaderboard(players) {
@@ -266,13 +345,17 @@ function updateLeaderboard(players) {
     list.innerHTML = "";
     Object.values(players).sort((a, b) => b.score - a.score).forEach(p => {
         let li = document.createElement('li');
-        li.innerText = `${p.name}: ${p.score} XP`;
+        li.innerText = `${p.name}: ${p.score} XP | Lv.${getLevel(p.score)}`;
         list.appendChild(li);
     });
 }
 
 function syncPlayer() {
+    localPlayer.score = clampScore(localPlayer.score);
+    localPlayer.level = getLevel(localPlayer.score);
     document.getElementById('playerScore').innerText = localPlayer.score;
+    const levelEl = document.getElementById('playerLevel');
+    if (levelEl) levelEl.innerText = localPlayer.level;
     if (myPlayerId) playersRef.child(myPlayerId).set(localPlayer);
 }
 
@@ -280,27 +363,34 @@ function syncPlayer() {
 // 6. ZAR ȘI DECLANȘARE EVENIMENTE
 // ==========================================
 document.getElementById('rollDiceBtn').addEventListener('click', () => {
+    if (gameLocked) return;
+    playTone('dice');
+    setGameLocked(true);
     let roll = Math.floor(Math.random() * 6) + 1;
     document.getElementById('diceResult').innerText = `Zar: 🎲 ${roll}`;
     localPlayer.position += roll;
     if (localPlayer.position >= boardSize) {
         localPlayer.position -= boardSize;
-        localPlayer.score += 50; 
+        localPlayer.score += 50;
         alert("🔄 CICLU COMPLETAT! Harta a fost regenerată. Bonus: +50 Energie.");
         generateRandomBoard();
     }
     syncPlayer();
-    
+
     for (let id in allNetworkPlayers) {
         if (id !== myPlayerId && allNetworkPlayers[id].position === localPlayer.position && localPlayer.position !== 0) {
-            alert(`⚔️ HACK ATACK! L-ai interceptat pe ${allNetworkPlayers[id].name}! Ai furat +15 Energie.`);
+            alert(`⚔️ HACK ATTACK! L-ai interceptat pe ${allNetworkPlayers[id].name}! Ai furat +15 Energie.`);
             localPlayer.score += 15;
             syncPlayer();
         }
     }
 
     let eventType = localTileMap[localPlayer.position];
-    if (eventType && eventType !== 'empty') setTimeout(() => handleTileEvent(eventType), 300);
+    if (eventType && eventType !== 'empty') {
+        setTimeout(() => handleTileEvent(eventType), 350);
+    } else {
+        setTimeout(() => setGameLocked(false), 350);
+    }
 });
 
 function handleTileEvent(type) {
@@ -310,14 +400,8 @@ function handleTileEvent(type) {
     const ansContainer = document.getElementById('answersContainer');
     const retryBtn = document.getElementById('retryBtn');
     
-    document.getElementById('miniGameArea').style.display = 'none';
-    document.getElementById('miniGameCanvas').style.display = 'none';
-    document.getElementById('bugGameContainer').style.display = 'none';
-    document.getElementById('memoryGameContainer').style.display = 'none';
-    document.getElementById('miniGameStats').style.display = 'none';
-    ansContainer.innerHTML = '';
-    retryBtn.style.display = 'none';
-    document.getElementById('rollDiceBtn').disabled = true;
+    resetChallengeUI();
+    setGameLocked(true);
 
     if (type === 'question' || type === 'trivia') {
         let dbPool = type === 'question' ? questionsDB : triviaDB;
@@ -332,11 +416,12 @@ function handleTileEvent(type) {
                 if (index === qData.correct) {
                     alert("✅ Corect! +20 XP");
                     localPlayer.score += 20;
+                    playTone('win');
                     modal.classList.add('hidden');
-                    document.getElementById('rollDiceBtn').disabled = false;
+                    setGameLocked(false);
                 } else {
                     alert("❌ Răspuns greșit! Ai pierdut 10 XP.");
-                    localPlayer.score -= 10;
+                    localPlayer.score = clampScore(localPlayer.score - 10);
                     ansContainer.innerHTML = ''; 
                     retryBtn.style.display = 'block'; 
                     retryBtn.onclick = () => handleTileEvent(type); 
@@ -349,13 +434,13 @@ function handleTileEvent(type) {
     }
     else if (type === 'attack') {
         performAttack(25);
-        document.getElementById('rollDiceBtn').disabled = false;
+        setGameLocked(false);
     }
     else if (type === 'boost') {
         alert("🚀 OVERCLOCK! Primești 30 Energie bonus.");
         localPlayer.score += 30;
         syncPlayer();
-        document.getElementById('rollDiceBtn').disabled = false;
+        setGameLocked(false);
     }
     else if (type === 'minigame') {
         let games = ['snake', 'bugs', 'memory'];
@@ -365,10 +450,11 @@ function handleTileEvent(type) {
 }
 
 function performAttack(amount) {
+    playTone('attack');
     let opponents = Object.keys(allNetworkPlayers).filter(id => id !== myPlayerId);
     if (opponents.length > 0) {
-        let targetId = opponents.sort((a, b) => allNetworkPlayers[b].score - allNetworkPlayers[a].score)[0];
-        playersRef.child(targetId).update({ score: (allNetworkPlayers[targetId].score || 100) - amount });
+        let targetId = opponents.sort((a, b) => (allNetworkPlayers[b].score || 0) - (allNetworkPlayers[a].score || 0))[0];
+        playersRef.child(targetId).child('score').transaction(score => clampScore((score || 100) - amount));
         localPlayer.score += amount;
         alert(`⚔️ Atac reușit! I-ai furat ${amount} XP lui ${allNetworkPlayers[targetId].name}.`);
     } else {
@@ -407,16 +493,18 @@ function launchMinigame(gameType) {
 }
 
 function minigameWin() {
+    playTone('win');
     alert("✅ Succes! +20 XP");
     localPlayer.score += 20;
     syncPlayer();
     document.getElementById('challengeModal').classList.add('hidden');
-    document.getElementById('rollDiceBtn').disabled = false;
+    setGameLocked(false);
 }
 
 function minigameLoss() {
+    playTone('loss');
     alert("❌ EȘEC CRITIC! -10 XP. Reîncearcă.");
-    localPlayer.score -= 10;
+    localPlayer.score = clampScore(localPlayer.score - 10);
     syncPlayer();
     document.getElementById('miniGameCanvas').style.display = 'none';
     document.getElementById('bugGameContainer').style.display = 'none';
@@ -494,7 +582,16 @@ function startBugGame() {
         bug.innerText = ['🐞','🐛','🦠'][Math.floor(Math.random()*3)];
         bug.style.top = Math.random() * 250 + 'px';
         bug.style.left = Math.random() * 250 + 'px';
-        bug.onmousedown = () => { score++; stats.innerText = `Timp: ${timeLeft}s | Erori: ${score}/10`; bug.remove(); };
+        bug.onmousedown = () => {
+            score++;
+            stats.innerText = `Timp: ${timeLeft}s | Erori: ${score}/10`;
+            bug.remove();
+            if (score >= 10) {
+                clearInterval(bugCountdown);
+                clearTimeout(bugSpawnTimer);
+                minigameWin();
+            }
+        };
         container.appendChild(bug);
         setTimeout(() => { if(bug.parentNode) bug.remove(); }, 1200);
         bugSpawnTimer = setTimeout(spawnBug, 700);
