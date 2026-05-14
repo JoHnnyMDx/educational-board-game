@@ -1,4 +1,9 @@
 // ==========================================
+// DIGITAL HEIST ACADEMY - LIVE ARENA V4
+// Clase de jucători + Skill Tree + Evenimente globale + Boss pe hartă
+// ==========================================
+
+// ==========================================
 // 1. CONFIGURARE FIREBASE
 // ==========================================
 const firebaseConfig = {
@@ -17,15 +22,32 @@ const playersRef = db.ref("players");
 const gameStateRef = db.ref("gameState");
 const coopGateRef = db.ref("gameState/coopGate");
 
-let myPlayerId = "";
-let localPlayer = { name: "", position: 0, score: 100, winner: false, bossKeys: 0 };
+// ==========================================
+// 2. CONFIGURARE JOC
+// ==========================================
 const boardSize = 40;
 const gameDurationMs = 30 * 60 * 1000;
 const minFastWinMs = 20 * 60 * 1000;
 const winningScore = 1200;
 const bossMaxHP = 300;
 const coopGatePosition = boardSize - 1;
-let bossHP = bossMaxHP;
+const globalEventIntervalMs = 3 * 60 * 1000;
+const globalEventDurationMs = 70 * 1000;
+const bossMoveIntervalMs = 20 * 1000;
+
+let myPlayerId = "";
+let localPlayer = {
+    name: "",
+    position: 0,
+    score: 100,
+    winner: false,
+    bossKeys: 0,
+    playerClass: "hacker",
+    skills: {},
+    lastSkillLevel: 1,
+    appliedEvents: {}
+};
+
 let allNetworkPlayers = {};
 let currentActiveMinigame = "";
 let localTileMap = {};
@@ -39,6 +61,46 @@ let gameTimerInterval = null;
 let targetNoticeShown = false;
 let coopMissionLocalOpen = false;
 let lastCoopMissionIdHandled = "";
+let skillChoiceOpen = false;
+let lastBossCatchAt = 0;
+
+const playerClasses = {
+    hacker: {
+        icon: "💻",
+        label: "Hacker",
+        description: "+20% XP la attack, dar pierde mai mult la quiz greșit."
+    },
+    defender: {
+        icon: "🛡️",
+        label: "Defender",
+        description: "Pierde jumătate XP la greșeli și primește bonus la boss."
+    },
+    analyst: {
+        icon: "🔍",
+        label: "Analyst",
+        description: "Primește hint la întrebări și vede mai ușor variante greșite."
+    },
+    speedrunner: {
+        icon: "⚡",
+        label: "Speedrunner",
+        description: "Aruncă 2 zaruri și păstrează rezultatul mai mare."
+    }
+};
+
+const skillTree = [
+    { id: "shield", icon: "🛡️", name: "Scut Digital", description: "Reduce fiecare penalizare cu 10 XP." },
+    { id: "dataLeech", icon: "🧲", name: "Data Leech", description: "+10 XP la fiecare atac reușit." },
+    { id: "deepScan", icon: "🔎", name: "Deep Scan", description: "Primești hint și dacă nu ești Analyst." },
+    { id: "bossSlayer", icon: "⚔️", name: "Boss Slayer", description: "+15 damage în luptele cu Boss-ul." },
+    { id: "backupProtocol", icon: "💾", name: "Backup Protocol", description: "+15 XP extra la evenimentul Backup Restored." }
+];
+
+const globalEvents = [
+    { type: "solar", icon: "🌩", title: "Solar Storm", description: "Zonele de attack sunt dezactivate temporar." },
+    { type: "virus", icon: "🦠", title: "Virus Outbreak", description: "Greșelile costă dublu XP." },
+    { type: "backup", icon: "💾", title: "Backup Restored", description: "Toți agenții primesc +30 XP." },
+    { type: "firewall", icon: "🔥", title: "Firewall Collapse", description: "Boss-ul apare pe hartă și se mișcă mai agresiv." }
+];
 
 const tileMeta = {
     question: { icon: "❓", label: "Quiz", className: "tile-question" },
@@ -54,6 +116,7 @@ const tileMeta = {
 
 function clampScore(value) { return Math.max(0, Number(value) || 0); }
 function randomBetween(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function getLevel(score) {
     score = clampScore(score);
     if (score >= 1000) return 4;
@@ -80,10 +143,16 @@ function getElapsedMs() {
     if (!gameState.startedAt) return 0;
     return Math.max(0, Date.now() - Number(gameState.startedAt));
 }
-function canFastWin() {
-    return getElapsedMs() >= minFastWinMs;
-}
+function canFastWin() { return getElapsedMs() >= minFastWinMs; }
 function cleanName(name) { return name.replace(/[<>]/g, "").slice(0, 24).trim(); }
+function getCurrentGlobalEvent() {
+    if (!gameState.globalEvent || !gameState.globalEvent.startedAt) return null;
+    const age = Date.now() - Number(gameState.globalEvent.startedAt);
+    return age <= Number(gameState.globalEvent.durationMs || globalEventDurationMs) ? gameState.globalEvent : null;
+}
+function getPlayerClassMeta() { return playerClasses[localPlayer.playerClass] || playerClasses.hacker; }
+function hasSkill(id) { return !!(localPlayer.skills && localPlayer.skills[id]); }
+function getAvailableSkills() { return skillTree.filter(s => !hasSkill(s.id)); }
 
 function setGameLocked(value) {
     gameLocked = value;
@@ -97,7 +166,7 @@ function playTone(type = "click") {
         const ctx = new AudioContext();
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
-        const freq = { click: 220, win: 680, loss: 120, dice: 420, attack: 90, boost: 760, boss: 55, voice: 520 }[type] || 220;
+        const freq = { click: 220, win: 680, loss: 120, dice: 420, attack: 90, boost: 760, boss: 55, voice: 520, event: 360 }[type] || 220;
         osc.frequency.value = freq;
         osc.type = type === "attack" || type === "boss" ? "sawtooth" : "square";
         gain.gain.setValueAtTime(0.04, ctx.currentTime);
@@ -117,34 +186,56 @@ function updateHud() {
     const winningEl = document.getElementById('winningScoreLabel');
     const phaseEl = document.getElementById('missionPhaseLabel');
     const keysEl = document.getElementById('bossKeysLabel');
+    const classEl = document.getElementById('playerClassLabel');
+    const skillsEl = document.getElementById('skillsLabel');
+    const bossMapEl = document.getElementById('bossMapLabel');
+
     if (scoreEl) scoreEl.innerText = localPlayer.score;
     if (levelEl) levelEl.innerText = getLevel(localPlayer.score);
     if (streakEl) streakEl.innerText = wrongAnswerStreak;
-    if (bossEl) bossEl.innerText = bossHP;
+    if (bossEl) bossEl.innerText = gameState.bossHP || bossMaxHP;
     if (winningEl) winningEl.innerText = winningScore;
     if (phaseEl) phaseEl.innerText = getMissionPhase(localPlayer.score);
     if (keysEl) keysEl.innerText = localPlayer.bossKeys || 0;
+    if (classEl) {
+        const meta = getPlayerClassMeta();
+        classEl.innerText = `${meta.icon} ${meta.label}`;
+    }
+    if (skillsEl) {
+        const owned = Object.keys(localPlayer.skills || {}).filter(k => localPlayer.skills[k]);
+        skillsEl.innerText = owned.length ? owned.map(k => (skillTree.find(s => s.id === k) || {name:k}).name).join(', ') : 'Nicio abilitate';
+    }
+    if (bossMapEl) bossMapEl.innerText = typeof gameState.bossPosition === 'number' ? `Zona ${gameState.bossPosition}` : 'Necunoscut';
+}
+
+function updateGlobalEventUI() {
+    const eventEl = document.getElementById('globalEventLabel');
+    const eventCard = document.getElementById('globalEventCard');
+    const current = getCurrentGlobalEvent();
+    if (!eventEl) return;
+    if (!current) {
+        eventEl.innerText = 'Niciun eveniment activ';
+        if (eventCard) eventCard.className = 'stat-card event-stat';
+        return;
+    }
+    eventEl.innerText = `${current.icon} ${current.title}`;
+    if (eventCard) eventCard.className = `stat-card event-stat event-${current.type}`;
 }
 
 function resetChallengeUI() {
-    document.getElementById('miniGameArea').style.display = 'none';
-    document.getElementById('miniGameCanvas').style.display = 'none';
-    document.getElementById('bugGameContainer').style.display = 'none';
-    document.getElementById('memoryGameContainer').style.display = 'none';
-    document.getElementById('miniGameStats').style.display = 'none';
-    document.getElementById('answersContainer').innerHTML = '';
-    document.getElementById('retryBtn').style.display = 'none';
-    document.getElementById('voiceChallengeBtn').style.display = 'none';
-    document.getElementById('voiceResult').innerText = '';
-    document.getElementById('closeModalBtn').style.display = 'none';
+    const ids = ['miniGameArea','miniGameCanvas','bugGameContainer','memoryGameContainer','miniGameStats','voiceChallengeBtn','closeModalBtn'];
+    ids.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+    const ans = document.getElementById('answersContainer');
+    if (ans) ans.innerHTML = '';
+    const retry = document.getElementById('retryBtn');
+    if (retry) retry.style.display = 'none';
+    const voice = document.getElementById('voiceResult');
+    if (voice) voice.innerText = '';
 }
-
-function closeMissionModal() {
-    document.getElementById('challengeModal').classList.add('hidden');
-}
+function closeMissionModal() { document.getElementById('challengeModal').classList.add('hidden'); }
 
 // ==========================================
-// 2. SISTEM ANTI-FRAUDĂ / DISCIPLINĂ DE JOC
+// 3. SISTEM ANTI-FRAUDĂ / DISCIPLINĂ DE JOC
 // ==========================================
 document.addEventListener('contextmenu', event => {
     event.preventDefault();
@@ -172,7 +263,7 @@ document.addEventListener('keydown', function(event) {
 document.addEventListener('selectstart', event => event.preventDefault());
 
 // ==========================================
-// 3. BAZA DE DATE ÎNTREBĂRI
+// 4. BAZA DE DATE ÎNTREBĂRI
 // ==========================================
 const questionsDB = [
     // --- Cap 6.1 Schema funcțională ---
@@ -300,8 +391,10 @@ const triviaDB = [
     { q: "Ce combinație de taste folosești pentru a copia rapid un text selectat?", options: ["Ctrl+V", "Ctrl+C", "Ctrl+X"], correct: 1 }
 ];
 
+
+
 // ==========================================
-// 4. GENERATOR HARTĂ
+// 5. GENERATOR HARTĂ
 // ==========================================
 function generateRandomBoard() {
     let eventsPool = [];
@@ -320,7 +413,7 @@ function generateRandomBoard() {
     }
 
     localTileMap = {};
-    for(let i = 1; i < boardSize; i++) { localTileMap[i] = eventsPool[i - 1] || 'empty'; }
+    for(let i = 1; i < boardSize; i++) localTileMap[i] = eventsPool[i - 1] || 'empty';
     localTileMap[coopGatePosition] = 'coop';
     updateBoardVisuals();
 }
@@ -334,16 +427,30 @@ function updateBoardVisuals() {
         cell.className = `cell ${meta.className}`;
         cell.innerHTML = `<span class="zone-title">${i === 0 ? 'START' : 'Zona ' + i}</span><span class="zone-icon">${meta.icon}</span><small>${meta.label}</small>`;
     }
+    updateBoardLive(allNetworkPlayers);
 }
 
 // ==========================================
-// 5. AUTENTIFICARE ȘI MULTIPLAYER
+// 6. AUTENTIFICARE ȘI MULTIPLAYER
 // ==========================================
 document.getElementById('joinGameBtn').addEventListener('click', () => {
     let name = cleanName(document.getElementById('playerNameInput').value);
     if (name.length < 3) return alert("Introdu un nume valid!");
+
+    const selectedClass = document.querySelector('input[name="playerClass"]:checked')?.value || 'hacker';
     myPlayerId = "agent_" + Math.random().toString(36).substr(2, 9);
-    localPlayer = { name, position: 0, score: 100, winner: false, bossKeys: 0 };
+    localPlayer = {
+        name,
+        position: 0,
+        score: 100,
+        winner: false,
+        bossKeys: 0,
+        playerClass: selectedClass,
+        skills: {},
+        lastSkillLevel: 1,
+        appliedEvents: {}
+    };
+
     playersRef.child(myPlayerId).set(localPlayer);
     initSharedGameState();
     document.getElementById('loginScreen').style.display = 'none';
@@ -359,14 +466,12 @@ document.getElementById('joinGameBtn').addEventListener('click', () => {
 document.getElementById('playerNameInput').addEventListener('keydown', event => {
     if (event.key === 'Enter') document.getElementById('joinGameBtn').click();
 });
-
 document.getElementById('rulesBtn').addEventListener('click', showRules);
-document.getElementById('resetArenaBtn').addEventListener('click', requestNewArenaSession);
+document.getElementById('resetArenaBtn')?.addEventListener('click', requestNewArenaSession);
 document.getElementById('closeModalBtn').addEventListener('click', () => {
     closeMissionModal();
-    if (!gameFinished) setGameLocked(false);
+    if (!gameFinished && !skillChoiceOpen && !coopMissionLocalOpen) setGameLocked(false);
 });
-
 window.addEventListener('beforeunload', () => { if (myPlayerId) playersRef.child(myPlayerId).remove(); });
 
 function initBoard() {
@@ -384,25 +489,9 @@ function initBoard() {
 function listenToNetwork() {
     playersRef.on("value", (snapshot) => {
         allNetworkPlayers = snapshot.val() || {};
-
-        // Sincronizează local punctajul/poziția dacă Firebase le-a modificat din exterior
-        // ex: atac random, bonus co-op, resetare poziție după misiune.
-        if (myPlayerId && allNetworkPlayers[myPlayerId]) {
-            localPlayer.score = clampScore(allNetworkPlayers[myPlayerId].score);
-            localPlayer.position = Number(allNetworkPlayers[myPlayerId].position || 0);
-            localPlayer.winner = !!allNetworkPlayers[myPlayerId].winner;
-            localPlayer.bossKeys = Number(allNetworkPlayers[myPlayerId].bossKeys || 0);
-            updateHud();
-        }
-
         updateBoardLive(allNetworkPlayers);
         updateLeaderboard(allNetworkPlayers);
-
-        // Dacă jucătorul așteaptă la Co-Op Gate, verificăm la fiecare update dacă a venit cineva.
-        if (waitingAtCoopGate && localPlayer.position === coopGatePosition && !gameFinished) {
-            checkCoopGate();
-        }
-
+        if (waitingAtCoopGate && localPlayer.position === coopGatePosition && !gameFinished) checkCoopGate();
         const winners = Object.values(allNetworkPlayers).filter(p => p.winner);
         if (winners.length && !gameFinished) announceExternalWinner(winners[0]);
     });
@@ -418,7 +507,12 @@ function initSharedGameState() {
                 minFastWinMs,
                 winningScore,
                 sessionId: Date.now(),
-                coopGate: null
+                coopGate: null,
+                bossHP: bossMaxHP,
+                bossPosition: randomBetween(8, boardSize - 5),
+                bossLastMoveAt: Date.now(),
+                globalEvent: null,
+                lastGlobalEventAt: Date.now()
             };
         }
         return state;
@@ -429,15 +523,19 @@ function listenToGameState() {
     gameStateRef.on("value", snapshot => {
         gameState = snapshot.val() || {};
         updateSessionClock();
+        updateHud();
+        updateGlobalEventUI();
+        updateBoardLive(allNetworkPlayers);
+        applyGlobalEventIfNeeded();
+        checkBossMapEncounter();
+
         if (gameState.status === "ended") {
             gameFinished = true;
             setGameLocked(true);
             showEndScreen(gameState.message || `🏁 Joc încheiat. Câștigător: ${gameState.winnerName || "necunoscut"}.`);
             return;
         }
-        if (!gameTimerInterval) {
-            gameTimerInterval = setInterval(updateSessionClock, 1000);
-        }
+        if (!gameTimerInterval) gameTimerInterval = setInterval(updateSessionClock, 1000);
     });
 }
 
@@ -454,9 +552,10 @@ function updateSessionClock() {
     if (progressEl) progressEl.style.width = `${Math.min(100, (elapsed / duration) * 100)}%`;
     if (fastWinEl) fastWinEl.innerText = canFastWin() ? "Victorie rapidă activă" : `Victorie rapidă după ${formatTime(minFastWinMs - elapsed)}`;
 
-    if (remaining <= 0 && gameState.status !== "ended") {
-        finishGameByTime();
-    }
+    maybeTriggerGlobalEvent();
+    maybeMoveBossOnMap();
+
+    if (remaining <= 0 && gameState.status !== "ended") finishGameByTime();
 }
 
 function getTopPlayer() {
@@ -464,7 +563,6 @@ function getTopPlayer() {
     if (!players.length && localPlayer.name) return localPlayer;
     return players.sort((a, b) => (b.score || 0) - (a.score || 0))[0];
 }
-
 function finishGameByTime() {
     const top = getTopPlayer();
     if (!top) return;
@@ -481,7 +579,6 @@ function finishGameByTime() {
         return state;
     });
 }
-
 function finishGameByFastWin() {
     const message = `🏆 VICTORIE RAPIDĂ! ${localPlayer.name} a atins ${localPlayer.score} XP după minutul 20 și a obținut cheia Boss.`;
     gameStateRef.transaction(state => {
@@ -496,7 +593,6 @@ function finishGameByFastWin() {
         return state;
     });
 }
-
 function requestNewArenaSession() {
     const ok = confirm("Resetezi arena pentru o sesiune nouă de 30 minute? Se vor șterge jucătorii și scorurile curente.");
     if (!ok) return;
@@ -508,14 +604,19 @@ function requestNewArenaSession() {
         minFastWinMs,
         winningScore,
         sessionId: Date.now(),
-        coopGate: null
+        coopGate: null,
+        bossHP: bossMaxHP,
+        bossPosition: randomBetween(8, boardSize - 5),
+        bossLastMoveAt: Date.now(),
+        globalEvent: null,
+        lastGlobalEventAt: Date.now()
     });
     alert("Arena a fost resetată. Elevii se pot reconecta.");
     location.reload();
 }
 
 function updateBoardLive(players) {
-    document.querySelectorAll('.player-token').forEach(el => el.remove());
+    document.querySelectorAll('.player-token, .boss-map-token').forEach(el => el.remove());
     const offsets = {};
     for (let id in players) {
         let p = players[id];
@@ -524,42 +625,181 @@ function updateBoardLive(players) {
             offsets[p.position] = (offsets[p.position] || 0) + 1;
             let token = document.createElement('div');
             token.classList.add('player-token');
-            token.title = `${p.name} - ${p.score} XP`;
-            token.innerText = (p.name || '?').charAt(0).toUpperCase();
+            token.title = `${p.name} - ${p.score} XP - ${playerClasses[p.playerClass]?.label || 'Agent'}`;
+            token.innerText = (playerClasses[p.playerClass]?.icon || '👤');
             token.style.backgroundColor = id === myPlayerId ? "#00ffcc" : "#ff0055";
-            token.style.right = (5 + (offsets[p.position] - 1) * 18) + "px";
+            token.style.right = (5 + (offsets[p.position] - 1) * 24) + "px";
             cell.appendChild(token);
         }
     }
-}
 
+    if (typeof gameState.bossPosition === 'number') {
+        const bossCell = document.getElementById(`cell-${gameState.bossPosition}`);
+        if (bossCell) {
+            let bossToken = document.createElement('div');
+            bossToken.classList.add('boss-map-token');
+            bossToken.innerText = '👾';
+            bossToken.title = `AI Core Boss - ${gameState.bossHP || bossMaxHP} HP`;
+            bossCell.appendChild(bossToken);
+        }
+    }
+}
 function updateLeaderboard(players) {
     let list = document.getElementById('leaderboardList');
     if (!list) return;
     list.innerHTML = "";
     Object.values(players).sort((a, b) => (b.score || 0) - (a.score || 0)).forEach((p, idx) => {
         let li = document.createElement('li');
-        li.innerText = `${idx + 1}. ${p.name}: ${p.score || 0} XP${p.winner ? ' 🏆' : ''}`;
+        li.innerText = `${idx + 1}. ${playerClasses[p.playerClass]?.icon || '👤'} ${p.name}: ${p.score || 0} XP${p.winner ? ' 🏆' : ''}`;
         list.appendChild(li);
     });
 }
-
 function syncPlayer() {
     localPlayer.score = clampScore(localPlayer.score);
+    localPlayer.skills = localPlayer.skills || {};
+    localPlayer.appliedEvents = localPlayer.appliedEvents || {};
     updateHud();
+    checkSkillUnlock();
     if (myPlayerId) playersRef.child(myPlayerId).set(localPlayer);
     checkWinCondition();
 }
 
 // ==========================================
-// 6. ZAR ȘI EVENIMENTE
+// 7. EVENIMENTE GLOBALE
+// ==========================================
+function maybeTriggerGlobalEvent() {
+    if (!gameState.startedAt || gameState.status !== 'running') return;
+    const now = Date.now();
+    const last = Number(gameState.lastGlobalEventAt || gameState.startedAt || now);
+    const current = getCurrentGlobalEvent();
+    if (current) return;
+    if (now - last < globalEventIntervalMs) return;
+
+    gameStateRef.transaction(state => {
+        if (!state || state.status !== 'running') return state;
+        const sNow = Date.now();
+        const sLast = Number(state.lastGlobalEventAt || state.startedAt || sNow);
+        const active = state.globalEvent && (sNow - Number(state.globalEvent.startedAt || 0) <= Number(state.globalEvent.durationMs || globalEventDurationMs));
+        if (active || sNow - sLast < globalEventIntervalMs) return state;
+        const ev = pickRandom(globalEvents);
+        state.globalEvent = { ...ev, id: 'event_' + sNow + '_' + Math.random().toString(36).slice(2, 7), startedAt: sNow, durationMs: globalEventDurationMs };
+        state.lastGlobalEventAt = sNow;
+        if (ev.type === 'firewall') {
+            state.bossPosition = randomBetween(3, boardSize - 3);
+            state.bossHP = state.bossHP || bossMaxHP;
+            state.bossLastMoveAt = sNow;
+        }
+        return state;
+    });
+}
+
+function applyGlobalEventIfNeeded() {
+    const ev = getCurrentGlobalEvent();
+    if (!ev || !myPlayerId) return;
+    localPlayer.appliedEvents = localPlayer.appliedEvents || {};
+
+    if (!localPlayer.appliedEvents[ev.id]) {
+        playTone('event');
+        alert(`${ev.icon} EVENIMENT GLOBAL: ${ev.title} — ${ev.description}`);
+        localPlayer.appliedEvents[ev.id] = true;
+        if (ev.type === 'backup') {
+            let bonus = hasSkill('backupProtocol') ? 45 : 30;
+            localPlayer.score += bonus;
+            alert(`💾 Backup Restored: ai primit +${bonus} XP.`);
+        }
+        syncPlayer();
+    }
+}
+
+// ==========================================
+// 8. BOSS PE HARTĂ
+// ==========================================
+function maybeMoveBossOnMap() {
+    if (!gameState.startedAt || gameState.status !== 'running') return;
+    if (typeof gameState.bossPosition !== 'number') return;
+    const now = Date.now();
+    const lastMove = Number(gameState.bossLastMoveAt || 0);
+    const ev = getCurrentGlobalEvent();
+    const interval = ev && ev.type === 'firewall' ? Math.floor(bossMoveIntervalMs / 2) : bossMoveIntervalMs;
+    if (now - lastMove < interval) return;
+
+    gameStateRef.transaction(state => {
+        if (!state || state.status !== 'running') return state;
+        const sNow = Date.now();
+        const sLast = Number(state.bossLastMoveAt || 0);
+        const sEv = state.globalEvent && (sNow - Number(state.globalEvent.startedAt || 0) <= Number(state.globalEvent.durationMs || globalEventDurationMs)) ? state.globalEvent : null;
+        const sInterval = sEv && sEv.type === 'firewall' ? Math.floor(bossMoveIntervalMs / 2) : bossMoveIntervalMs;
+        if (sNow - sLast < sInterval) return state;
+        let pos = Number(state.bossPosition || randomBetween(3, boardSize - 3));
+        let step = randomBetween(-3, 3);
+        if (step === 0) step = 1;
+        let newPos = pos + step;
+        if (newPos <= 0) newPos = 1;
+        if (newPos >= boardSize) newPos = boardSize - 2;
+        if (newPos === coopGatePosition) newPos = coopGatePosition - 1;
+        state.bossPosition = newPos;
+        state.bossLastMoveAt = sNow;
+        return state;
+    });
+}
+
+function checkBossMapEncounter() {
+    if (!myPlayerId || gameFinished || gameLocked) return;
+    if (typeof gameState.bossPosition !== 'number') return;
+    if (localPlayer.position !== gameState.bossPosition) return;
+    if (Date.now() - lastBossCatchAt < 5000) return;
+    lastBossCatchAt = Date.now();
+    launchBossCatchChallenge();
+}
+
+function launchBossCatchChallenge() {
+    resetChallengeUI();
+    playTone('boss');
+    setGameLocked(true);
+    const modal = document.getElementById('challengeModal');
+    const title = document.getElementById('challengeTitle');
+    const text = document.getElementById('challengeText');
+    const ansContainer = document.getElementById('answersContainer');
+    const qData = pickRandom(questionsDB);
+
+    title.innerText = "👾 Boss-ul te-a prins pe hartă!";
+    text.innerText = qData.q;
+
+    qData.options.forEach((opt, index) => {
+        let btn = document.createElement('button');
+        btn.classList.add('answer-btn');
+        btn.innerText = opt;
+        btn.onclick = () => {
+            if (index === qData.correct) {
+                rewardCorrect(30, "Ai evitat Boss-ul");
+                modal.classList.add('hidden');
+                setGameLocked(false);
+            } else {
+                localPlayer.score = clampScore(localPlayer.score - 40);
+                alert("❌ Boss-ul te-a lovit! -40 XP și revii cu 3 zone în urmă.");
+                localPlayer.position = Math.max(0, localPlayer.position - 3);
+                syncPlayer();
+                modal.classList.add('hidden');
+                setGameLocked(false);
+            }
+        };
+        ansContainer.appendChild(btn);
+    });
+    modal.classList.remove('hidden');
+}
+
+// ==========================================
+// 9. ZAR ȘI EVENIMENTE PE TABLĂ
 // ==========================================
 document.getElementById('rollDiceBtn').addEventListener('click', () => {
     if (gameLocked || gameFinished) return;
     setGameLocked(true);
     playTone('dice');
-    let roll = randomBetween(1, 6);
-    document.getElementById('diceResult').innerText = `Zar: 🎲 ${roll}`;
+
+    let rollA = randomBetween(1, 6);
+    let rollB = localPlayer.playerClass === 'speedrunner' ? randomBetween(1, 6) : null;
+    let roll = rollB ? Math.max(rollA, rollB) : rollA;
+    document.getElementById('diceResult').innerText = rollB ? `Speedrunner: 🎲 ${rollA} + 🎲 ${rollB} → alegi ${roll}` : `Zar: 🎲 ${roll}`;
 
     localPlayer.position += roll;
     if (localPlayer.position >= boardSize) {
@@ -569,13 +809,10 @@ document.getElementById('rollDiceBtn').addEventListener('click', () => {
         generateRandomBoard();
     }
     syncPlayer();
-
     interceptPlayersOnSameTile();
 
-    if (localPlayer.position === coopGatePosition) {
-        setTimeout(checkCoopGate, 350);
-        return;
-    }
+    if (localPlayer.position === coopGatePosition) { setTimeout(checkCoopGate, 350); return; }
+    if (localPlayer.position === gameState.bossPosition) { setTimeout(checkBossMapEncounter, 350); return; }
 
     let eventType = localTileMap[localPlayer.position];
     if (eventType && eventType !== 'empty') setTimeout(() => handleTileEvent(eventType), 350);
@@ -586,6 +823,7 @@ function interceptPlayersOnSameTile() {
     for (let id in allNetworkPlayers) {
         if (id !== myPlayerId && allNetworkPlayers[id].position === localPlayer.position && localPlayer.position !== 0) {
             let stolenXP = randomBetween(5, 20);
+            if (hasSkill('dataLeech')) stolenXP += 10;
             playersRef.child(id).child('score').transaction(score => clampScore((score || 100) - stolenXP));
             localPlayer.score += stolenXP;
             alert(`⚔️ Interceptare! Ai furat ${stolenXP} XP de la ${allNetworkPlayers[id].name}.`);
@@ -596,15 +834,19 @@ function interceptPlayersOnSameTile() {
 }
 
 function handleTileEvent(type) {
-    const modal = document.getElementById('challengeModal');
-    const title = document.getElementById('challengeTitle');
-    const text = document.getElementById('challengeText');
-
     resetChallengeUI();
     setGameLocked(true);
+    const currentEvent = getCurrentGlobalEvent();
 
     if (type === 'question' || type === 'trivia') launchQuestion(type);
-    else if (type === 'attack') { performAttack(); setGameLocked(false); }
+    else if (type === 'attack') {
+        if (currentEvent && currentEvent.type === 'solar') {
+            alert("🌩 Solar Storm: zona de atac este dezactivată. Primești +5 XP pentru supraviețuire.");
+            localPlayer.score += 5;
+            syncPlayer();
+        } else performAttack();
+        setGameLocked(false);
+    }
     else if (type === 'boost') {
         playTone('boost');
         let bonus = randomBetween(20, 45);
@@ -618,14 +860,24 @@ function handleTileEvent(type) {
     else if (type === 'voice') launchVoiceChallenge("Ai nimerit pe zona vocală. Spune parola pentru a continua.");
     else if (type === 'minigame') {
         let games = ['snake', 'bugs', 'memory'];
-        currentActiveMinigame = games[Math.floor(Math.random() * games.length)];
+        currentActiveMinigame = pickRandom(games);
         launchMinigame(currentActiveMinigame);
     }
 }
 
+function calculateWrongPenalty() {
+    let penalty = 10 * wrongAnswerStreak;
+    const currentEvent = getCurrentGlobalEvent();
+    if (currentEvent && currentEvent.type === 'virus') penalty *= 2;
+    if (localPlayer.playerClass === 'hacker') penalty = Math.ceil(penalty * 1.5);
+    if (localPlayer.playerClass === 'defender') penalty = Math.ceil(penalty * 0.5);
+    if (hasSkill('shield')) penalty = Math.max(0, penalty - 10);
+    return penalty;
+}
+
 function applyWrongPenalty(reason = "Răspuns greșit") {
     wrongAnswerStreak++;
-    let penalty = 10 * wrongAnswerStreak;
+    let penalty = calculateWrongPenalty();
     localPlayer.score = clampScore(localPlayer.score - penalty);
     playTone('loss');
     alert(`❌ ${reason}! Penalizare progresivă: -${penalty} XP.`);
@@ -636,7 +888,6 @@ function applyWrongPenalty(reason = "Răspuns greșit") {
     }
     return false;
 }
-
 function rewardCorrect(points = 20, message = "Corect") {
     wrongAnswerStreak = 0;
     localPlayer.score += points;
@@ -644,7 +895,11 @@ function rewardCorrect(points = 20, message = "Corect") {
     alert(`✅ ${message}! +${points} XP.`);
     syncPlayer();
 }
-
+function getHintForQuestion(qData) {
+    const wrongIndexes = qData.options.map((_, idx) => idx).filter(idx => idx !== qData.correct);
+    const wrong = qData.options[pickRandom(wrongIndexes)];
+    return `Hint: varianta „${wrong}” NU este corectă.`;
+}
 function launchQuestion(type) {
     activeQuestionType = type;
     const modal = document.getElementById('challengeModal');
@@ -653,10 +908,17 @@ function launchQuestion(type) {
     const ansContainer = document.getElementById('answersContainer');
     const retryBtn = document.getElementById('retryBtn');
     let dbPool = type === 'question' ? questionsDB : triviaDB;
-    let qData = dbPool[Math.floor(Math.random() * dbPool.length)];
+    let qData = pickRandom(dbPool);
 
     title.innerText = type === 'question' ? "[Teorie]" : "[Cultură Generală]";
     text.innerText = qData.q;
+
+    if (localPlayer.playerClass === 'analyst' || hasSkill('deepScan')) {
+        const hint = document.createElement('p');
+        hint.className = 'hint-box';
+        hint.innerText = '🔍 ' + getHintForQuestion(qData);
+        ansContainer.appendChild(hint);
+    }
 
     qData.options.forEach((opt, index) => {
         let btn = document.createElement('button');
@@ -671,7 +933,7 @@ function launchQuestion(type) {
                 const launchedVoice = applyWrongPenalty("Răspuns greșit");
                 if (!launchedVoice) {
                     ansContainer.innerHTML = '';
-                    retryBtn.innerText = `Reîncearcă întrebarea. Următoarea greșeală: -${10 * (wrongAnswerStreak + 1)} XP`;
+                    retryBtn.innerText = `Reîncearcă întrebarea. Următoarea greșeală poate costa mai mult XP`;
                     retryBtn.style.display = 'block';
                     retryBtn.onclick = () => launchQuestion(type);
                 }
@@ -679,16 +941,16 @@ function launchQuestion(type) {
         };
         ansContainer.appendChild(btn);
     });
-
     modal.classList.remove('hidden');
 }
-
 function performAttack() {
     playTone('attack');
     let opponents = Object.keys(allNetworkPlayers).filter(id => id !== myPlayerId);
     if (opponents.length > 0) {
-        let targetId = opponents[Math.floor(Math.random() * opponents.length)];
+        let targetId = pickRandom(opponents);
         let stolenXP = randomBetween(10, 45);
+        if (localPlayer.playerClass === 'hacker') stolenXP = Math.ceil(stolenXP * 1.2);
+        if (hasSkill('dataLeech')) stolenXP += 10;
         playersRef.child(targetId).child('score').transaction(score => clampScore((score || 100) - stolenXP));
         localPlayer.score += stolenXP;
         alert(`⚔️ Atac random reușit! Ai furat ${stolenXP} XP de la ${allNetworkPlayers[targetId].name}.`);
@@ -701,239 +963,191 @@ function performAttack() {
 }
 
 // ==========================================
-// 7. CO-OP GATE - SINCRONIZAT PRIN FIREBASE
+// 10. SKILL TREE
 // ==========================================
-
-function getPlayersAtCoopGate() {
-    let playersHere = [];
-    for (let id in allNetworkPlayers) {
-        if (Number(allNetworkPlayers[id].position) === coopGatePosition) {
-            playersHere.push({ id, ...allNetworkPlayers[id] });
-        }
-    }
-    return playersHere;
+function checkSkillUnlock() {
+    if (!myPlayerId || skillChoiceOpen || gameFinished) return;
+    const currentLevel = getLevel(localPlayer.score);
+    const lastLevel = Number(localPlayer.lastSkillLevel || 1);
+    if (currentLevel > lastLevel && currentLevel >= 2) showSkillChoice(currentLevel);
 }
-
-function checkCoopGate() {
-    if (gameFinished || !myPlayerId) return;
-
-    const playersHere = getPlayersAtCoopGate();
-
-    if (playersHere.length < 2) {
-        waitingAtCoopGate = true;
-        setGameLocked(true);
-
-        coopGateRef.transaction(gate => {
-            if (!gate || gate.status === "completed" || gate.status === "cancelled") {
-                return {
-                    status: "waiting",
-                    waitingIds: [myPlayerId],
-                    updatedAt: firebase.database.ServerValue.TIMESTAMP
-                };
-            }
-
-            if (gate.status === "waiting") {
-                const waitingIds = Array.isArray(gate.waitingIds) ? gate.waitingIds : [];
-                if (!waitingIds.includes(myPlayerId)) waitingIds.push(myPlayerId);
-                gate.waitingIds = waitingIds;
-                gate.updatedAt = firebase.database.ServerValue.TIMESTAMP;
-            }
-
-            return gate;
-        });
-
-        alert("🔐 Ai ajuns la FIREWALL GATE! Așteaptă încă un agent pe aceeași zonă.");
-        return;
-    }
-
-    waitingAtCoopGate = false;
-    createCoopMission(playersHere);
-}
-
-function createCoopMission(playersHere) {
-    const participants = playersHere
-        .slice(0, 2)
-        .map(p => ({
-            id: p.id,
-            name: p.name || "Agent",
-            score: clampScore(p.score || 100)
-        }));
-
-    if (!participants.some(p => p.id === myPlayerId)) return;
-
-    coopGateRef.transaction(gate => {
-        // Dacă există deja o misiune activă, nu creăm alta.
-        if (gate && gate.status === "active") return gate;
-
-        // Dacă misiunea precedentă a fost completată, permitem o misiune nouă.
-        const questionIndex = Math.floor(Math.random() * questionsDB.length);
-
-        return {
-            status: "active",
-            missionId: "coop_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6),
-            participants,
-            questionIndex,
-            createdBy: myPlayerId,
-            createdAt: firebase.database.ServerValue.TIMESTAMP
-        };
-    });
-}
-
-function listenToCoopGate() {
-    coopGateRef.on("value", snapshot => {
-        const gate = snapshot.val();
-
-        if (!gate) return;
-
-        if (gate.status === "active") {
-            const participantIds = (gate.participants || []).map(p => p.id);
-
-            if (
-                participantIds.includes(myPlayerId) &&
-                localPlayer.position === coopGatePosition &&
-                gate.missionId !== lastCoopMissionIdHandled
-            ) {
-                lastCoopMissionIdHandled = gate.missionId;
-                coopMissionLocalOpen = true;
-                waitingAtCoopGate = false;
-                launchCoopMission(gate);
-            }
-        }
-
-        if (gate.status === "completed") {
-            const participantIds = (gate.participants || []).map(p => p.id);
-
-            if (participantIds.includes(myPlayerId) && coopMissionLocalOpen) {
-                coopMissionLocalOpen = false;
-                document.getElementById('challengeModal').classList.add('hidden');
-                setGameLocked(false);
-
-                if (gate.success) {
-                    alert("✅ Misiunea Co-Op a fost finalizată! Ați primit bonus și reveniți la START.");
-                }
-            }
-
-            // Curățăm poarta după câteva secunde, dar doar creatorul/sau primul participant încearcă.
-            if (participantIds[0] === myPlayerId) {
-                setTimeout(() => {
-                    coopGateRef.transaction(current => {
-                        if (current && current.status === "completed" && current.missionId === gate.missionId) {
-                            return null;
-                        }
-                        return current;
-                    });
-                }, 3000);
-            }
-        }
-
-        if (gate.status === "waiting") {
-            const playersHere = getPlayersAtCoopGate();
-            if (playersHere.length >= 2 && localPlayer.position === coopGatePosition && !gameFinished) {
-                createCoopMission(playersHere);
-            }
-        }
-    });
-}
-
-function launchCoopMission(gate) {
+function showSkillChoice(level) {
+    const available = getAvailableSkills();
+    if (!available.length) { localPlayer.lastSkillLevel = level; return; }
+    skillChoiceOpen = true;
     resetChallengeUI();
     setGameLocked(true);
-
     const modal = document.getElementById('challengeModal');
     const title = document.getElementById('challengeTitle');
     const text = document.getElementById('challengeText');
     const ansContainer = document.getElementById('answersContainer');
+    title.innerText = `🌟 Nivel ${level} atins! Alege o abilitate`;
+    text.innerText = "Alege un upgrade permanent pentru restul sesiunii.";
+    available.slice(0, 3).forEach(skill => {
+        const btn = document.createElement('button');
+        btn.classList.add('answer-btn', 'skill-choice-btn');
+        btn.innerText = `${skill.icon} ${skill.name} — ${skill.description}`;
+        btn.onclick = () => {
+            localPlayer.skills = localPlayer.skills || {};
+            localPlayer.skills[skill.id] = true;
+            localPlayer.lastSkillLevel = level;
+            alert(`✅ Ai deblocat: ${skill.name}`);
+            skillChoiceOpen = false;
+            modal.classList.add('hidden');
+            setGameLocked(false);
+            syncPlayer();
+        };
+        ansContainer.appendChild(btn);
+    });
+    modal.classList.remove('hidden');
+}
 
-    const participants = gate.participants || [];
-    const qData = questionsDB[Number(gate.questionIndex || 0)] || questionsDB[0];
+// ==========================================
+// 11. CO-OP GATE - SINCRONIZAT PRIN FIREBASE
+// ==========================================
+function getPlayersAtCoopGate() {
+    let playersHere = [];
+    for (let id in allNetworkPlayers) {
+        if (Number(allNetworkPlayers[id].position) === coopGatePosition) playersHere.push({ id, ...allNetworkPlayers[id] });
+    }
+    return playersHere;
+}
+function checkCoopGate() {
+    if (gameFinished || !myPlayerId) return;
+    const playersHere = getPlayersAtCoopGate();
+    if (playersHere.length < 2) {
+        waitingAtCoopGate = true;
+        alert("🔐 Ai ajuns la FIREWALL GATE! Așteaptă încă un agent pentru a continua.");
+        setGameLocked(true);
+        return;
+    }
+    waitingAtCoopGate = false;
+    const selected = playersHere.slice(0, 2);
+    createSharedCoopMission(selected);
+}
+function createSharedCoopMission(playersHere) {
+    const questionIndex = randomBetween(0, questionsDB.length - 1);
+    const missionId = "coop_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    coopGateRef.transaction(state => {
+        if (state && state.status === 'active') return state;
+        return {
+            status: 'active',
+            missionId,
+            questionIndex,
+            participantIds: playersHere.map(p => p.id),
+            participantNames: playersHere.map(p => p.name),
+            startedAt: Date.now(),
+            answeredBy: null
+        };
+    });
+}
+function listenToCoopGate() {
+    coopGateRef.on('value', snapshot => {
+        const mission = snapshot.val();
+        if (!mission || !myPlayerId) return;
+        if (mission.status === 'active' && mission.participantIds && mission.participantIds.includes(myPlayerId)) {
+            if (lastCoopMissionIdHandled !== mission.missionId) {
+                lastCoopMissionIdHandled = mission.missionId;
+                coopMissionLocalOpen = true;
+                launchSharedCoopMission(mission);
+            }
+        }
+        if ((mission.status === 'success' || mission.status === 'failed') && mission.participantIds && mission.participantIds.includes(myPlayerId)) {
+            coopMissionLocalOpen = false;
+            waitingAtCoopGate = false;
+            if (!gameFinished) setGameLocked(false);
+        }
+    });
+}
+function launchSharedCoopMission(mission) {
+    resetChallengeUI();
+    setGameLocked(true);
+    const modal = document.getElementById('challengeModal');
+    const title = document.getElementById('challengeTitle');
+    const text = document.getElementById('challengeText');
+    const ansContainer = document.getElementById('answersContainer');
+    const qData = questionsDB[mission.questionIndex] || pickRandom(questionsDB);
 
     title.innerText = "🤝 MISIUNE CO-OP: Spargerea Firewall-ului";
-    text.innerText = `Agenți conectați: ${participants.map(p => p.name).join(' + ')}. Rezolvați provocarea pentru a trece de Firewall Gate.`;
+    text.innerText = `Agenți conectați: ${(mission.participantNames || []).join(' + ')}. Răspundeți corect pentru +50 XP și revenire la START.`;
 
-    let questionEl = document.createElement('p');
-    questionEl.classList.add('coop-question');
-    questionEl.innerText = qData.q;
-    ansContainer.appendChild(questionEl);
+    const p = document.createElement('p');
+    p.innerText = qData.q;
+    ansContainer.appendChild(p);
 
     qData.options.forEach((opt, index) => {
         let btn = document.createElement('button');
         btn.classList.add('answer-btn');
         btn.innerText = opt;
-
         btn.onclick = () => {
-            if (index === qData.correct) {
-                completeCoopMission(gate, true);
-            } else {
-                const launchedVoice = applyWrongPenalty("Misiune co-op eșuată");
-                if (!launchedVoice) {
-                    alert("Încercați din nou împreună. Poarta rămâne blocată până răspundeți corect.");
-                }
-            }
+            if (index === qData.correct) resolveCoopMission(mission, true);
+            else resolveCoopMission(mission, false);
         };
-
         ansContainer.appendChild(btn);
     });
-
     modal.classList.remove('hidden');
 }
-
-function completeCoopMission(gate, success) {
-    coopGateRef.transaction(current => {
-        if (!current || current.status !== "active" || current.missionId !== gate.missionId) {
-            return current;
-        }
-
-        current.status = "completed";
-        current.success = success;
-        current.completedBy = myPlayerId;
-        current.completedAt = firebase.database.ServerValue.TIMESTAMP;
-
-        return current;
-    }, (error, committed, snapshot) => {
-        if (error || !committed) return;
-
-        const completedGate = snapshot.val();
-        if (!completedGate || completedGate.completedBy !== myPlayerId || !completedGate.success) return;
-
-        const participants = completedGate.participants || [];
-
-        participants.forEach(p => {
-            playersRef.child(p.id).transaction(player => {
+function resolveCoopMission(mission, success) {
+    const modal = document.getElementById('challengeModal');
+    if (success) {
+        alert("✅ Misiune co-op reușită! Agenții primesc +50 XP și revin la START.");
+        (mission.participantIds || []).forEach(id => {
+            playersRef.child(id).transaction(player => {
                 if (!player) return player;
                 player.score = clampScore((player.score || 100) + 50);
                 player.position = 0;
                 return player;
             });
         });
-
-        if (participants.some(p => p.id === myPlayerId)) {
+        if ((mission.participantIds || []).includes(myPlayerId)) {
             localPlayer.score += 50;
             localPlayer.position = 0;
-            waitingAtCoopGate = false;
-            coopMissionLocalOpen = false;
             syncPlayer();
         }
-
-        alert("✅ Misiune co-op reușită! Ambii agenți primesc +50 XP și revin la START.");
-        document.getElementById('challengeModal').classList.add('hidden');
+        coopGateRef.update({ status: 'success', answeredBy: myPlayerId, endedAt: Date.now() });
+        setTimeout(() => coopGateRef.remove(), 1200);
+        modal.classList.add('hidden');
         setGameLocked(false);
-    });
+    } else {
+        const launchedVoice = applyWrongPenalty("Misiune co-op eșuată");
+        coopGateRef.update({ status: 'failed', answeredBy: myPlayerId, endedAt: Date.now() });
+        setTimeout(() => coopGateRef.remove(), 1200);
+        if (!launchedVoice) {
+            modal.classList.add('hidden');
+            setGameLocked(false);
+        }
+    }
 }
 
 // ==========================================
-// 8. BOSS BATTLE
+// 12. BOSS BATTLE
 // ==========================================
+function calculateBossDamage() {
+    let damage = randomBetween(25, 60);
+    if (localPlayer.playerClass === 'defender') damage = Math.ceil(damage * 1.2);
+    if (hasSkill('bossSlayer')) damage += 15;
+    return damage;
+}
 function launchBossBattle() {
     resetChallengeUI();
     playTone('boss');
+    setGameLocked(true);
     const modal = document.getElementById('challengeModal');
     const title = document.getElementById('challengeTitle');
     const text = document.getElementById('challengeText');
     const ansContainer = document.getElementById('answersContainer');
-    let qData = questionsDB[Math.floor(Math.random() * questionsDB.length)];
+    let qData = pickRandom(questionsDB);
+    let currentHP = Number(gameState.bossHP || bossMaxHP);
 
-    title.innerText = `👾 BOSS BATTLE: AI CORE HP ${bossHP}/${bossMaxHP}`;
+    title.innerText = `👾 BOSS BATTLE: AI CORE HP ${currentHP}/${bossMaxHP}`;
     text.innerText = qData.q;
+
+    if (localPlayer.playerClass === 'analyst' || hasSkill('deepScan')) {
+        const hint = document.createElement('p');
+        hint.className = 'hint-box';
+        hint.innerText = '🔍 ' + getHintForQuestion(qData);
+        ansContainer.appendChild(hint);
+    }
 
     qData.options.forEach((opt, index) => {
         let btn = document.createElement('button');
@@ -941,59 +1155,58 @@ function launchBossBattle() {
         btn.innerText = opt;
         btn.onclick = () => {
             if (index === qData.correct) {
-                let damage = randomBetween(25, 60);
-                bossHP = Math.max(0, bossHP - damage);
+                let damage = calculateBossDamage();
                 rewardCorrect(damage, `Lovitură reușită. Damage: ${damage}`);
-                updateHud();
-                if (bossHP <= 0) {
-                    alert("🏆 BOSS ÎNVINS! Bonus final +100 XP și +1 Cheie Boss. AI Core se regenerează pentru următorii jucători.");
-                    localPlayer.score += 100;
-                    localPlayer.bossKeys = (localPlayer.bossKeys || 0) + 1;
-                    bossHP = bossMaxHP;
-                    syncPlayer();
-                    modal.classList.add('hidden');
-                    setGameLocked(false);
-                } else {
-                    launchBossBattle();
-                }
+                gameStateRef.child('bossHP').transaction(hp => Math.max(0, Number(hp || bossMaxHP) - damage), (err, committed, snap) => {
+                    const newHp = Number(snap.val() || 0);
+                    if (newHp <= 0) {
+                        alert("🏆 BOSS ÎNVINS! Bonus final +100 XP și +1 Cheie Boss. AI Core se regenerează.");
+                        localPlayer.score += 100;
+                        localPlayer.bossKeys = (localPlayer.bossKeys || 0) + 1;
+                        syncPlayer();
+                        gameStateRef.update({ bossHP: bossMaxHP, bossPosition: randomBetween(4, boardSize - 4), bossLastMoveAt: Date.now() });
+                        modal.classList.add('hidden');
+                        setGameLocked(false);
+                    } else {
+                        setTimeout(launchBossBattle, 300);
+                    }
+                });
             } else {
                 const launchedVoice = applyWrongPenalty("Boss-ul te-a lovit");
-                if (!launchedVoice) launchBossBattle();
+                if (!launchedVoice) setTimeout(launchBossBattle, 300);
             }
         };
         ansContainer.appendChild(btn);
     });
-
     modal.classList.remove('hidden');
 }
 
 // ==========================================
-// 9. VOICE CHALLENGE
+// 13. VOICE CHALLENGE
 // ==========================================
 function launchVoiceChallenge(customText = "Spune parola în microfon pentru a continua.") {
     resetChallengeUI();
     playTone('voice');
+    setGameLocked(true);
     const modal = document.getElementById('challengeModal');
     const title = document.getElementById('challengeTitle');
     const text = document.getElementById('challengeText');
     const voiceBtn = document.getElementById('voiceChallengeBtn');
     const voiceResult = document.getElementById('voiceResult');
     const voicePhrases = [
-    "calculatorul este inteligent",
-    "datele circulă prin rețea",
-    "procesorul execută instrucțiuni",
-    "internetul folosește protocoale",
-    "memoria ram este volatilă"
+        "calculatorul este inteligent",
+        "datele circulă prin rețea",
+        "procesorul execută instrucțiuni",
+        "internetul folosește protocoale",
+        "memoria ram este volatilă"
     ];
-
-    const secretPhrase = voicePhrases[Math.floor(Math.random() * voicePhrases.length)];
+    const secretPhrase = pickRandom(voicePhrases);
 
     title.innerText = "🎙️ VERIFICARE VOCALĂ";
     text.innerText = `${customText} Fraza: „${secretPhrase}”.`;
     voiceBtn.style.display = "block";
     voiceResult.innerText = "";
     modal.classList.remove('hidden');
-    setGameLocked(true);
 
     voiceBtn.onclick = () => {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1025,17 +1238,16 @@ function launchVoiceChallenge(customText = "Spune parola în microfon pentru a c
                 syncPlayer();
             }
         };
-        recognition.onerror = () => {
-            voiceResult.innerText = "Microfonul nu a putut fi folosit. Verifică permisiunile browserului.";
-        };
+        recognition.onerror = () => { voiceResult.innerText = "Microfonul nu a putut fi folosit. Verifică permisiunile browserului."; };
     };
 }
 
 // ==========================================
-// 10. MINI-JOCURI
+// 14. MINI-JOCURI
 // ==========================================
 function launchMinigame(gameType) {
     resetChallengeUI();
+    setGameLocked(true);
     const modal = document.getElementById('challengeModal');
     const title = document.getElementById('challengeTitle');
     const text = document.getElementById('challengeText');
@@ -1043,27 +1255,11 @@ function launchMinigame(gameType) {
     area.style.display = 'block';
     modal.classList.remove('hidden');
 
-    if (gameType === 'snake') {
-        title.innerText = "⚠️ SYSTEM CRASH";
-        text.innerText = "Strânge 10 puncte la Snake pentru a debloca!";
-        startSnakeGame();
-    } else if (gameType === 'bugs') {
-        title.innerText = "🐞 VÂNĂTOAREA DE ERORI";
-        text.innerText = "Zdrobește 10 erori în 15 secunde!";
-        startBugGame();
-    } else if (gameType === 'memory') {
-        title.innerText = "🧠 CELULA DE MEMORIE";
-        text.innerText = "Găsește toate perechile!";
-        startMemoryGame();
-    }
+    if (gameType === 'snake') { title.innerText = "⚠️ SYSTEM CRASH"; text.innerText = "Strânge 10 puncte la Snake pentru a debloca!"; startSnakeGame(); }
+    else if (gameType === 'bugs') { title.innerText = "🐞 VÂNĂTOAREA DE ERORI"; text.innerText = "Zdrobește 10 erori în 15 secunde!"; startBugGame(); }
+    else if (gameType === 'memory') { title.innerText = "🧠 CELULA DE MEMORIE"; text.innerText = "Găsește toate perechile!"; startMemoryGame(); }
 }
-
-function minigameWin() {
-    rewardCorrect(25, "Mini-joc reușit");
-    document.getElementById('challengeModal').classList.add('hidden');
-    setGameLocked(false);
-}
-
+function minigameWin() { rewardCorrect(25, "Mini-joc reușit"); document.getElementById('challengeModal').classList.add('hidden'); setGameLocked(false); }
 function minigameLoss() {
     const launchedVoice = applyWrongPenalty("Eșec critic la mini-joc");
     document.getElementById('miniGameCanvas').style.display = 'none';
@@ -1071,7 +1267,7 @@ function minigameLoss() {
     document.getElementById('memoryGameContainer').style.display = 'none';
     if (!launchedVoice) {
         const retryBtn = document.getElementById('retryBtn');
-        retryBtn.innerText = `Reîncearcă mini-jocul. Următoarea greșeală: -${10 * (wrongAnswerStreak + 1)} XP`;
+        retryBtn.innerText = `Reîncearcă mini-jocul. Următoarea greșeală poate costa mai mult XP`;
         retryBtn.style.display = 'block';
         retryBtn.onclick = () => launchMinigame(currentActiveMinigame);
     }
@@ -1179,11 +1375,10 @@ function startMemoryGame() {
 }
 
 // ==========================================
-// 11. FINAL JOC ȘI REGULI
+// 15. FINAL JOC ȘI REGULI
 // ==========================================
 function checkWinCondition() {
     if (gameFinished || !myPlayerId) return;
-
     if (localPlayer.score >= winningScore && !canFastWin()) {
         if (!targetNoticeShown) {
             targetNoticeShown = true;
@@ -1191,7 +1386,6 @@ function checkWinCondition() {
         }
         return;
     }
-
     if (localPlayer.score >= winningScore && canFastWin() && (localPlayer.bossKeys || 0) >= 1) {
         gameFinished = true;
         localPlayer.winner = true;
@@ -1200,13 +1394,11 @@ function checkWinCondition() {
         finishGameByFastWin();
     }
 }
-
 function announceExternalWinner(winner) {
     gameFinished = true;
     setGameLocked(true);
     showEndScreen(`🏆 Joc încheiat! ${winner.name} a câștigat cu ${winner.score} XP.`);
 }
-
 function showEndScreen(message) {
     resetChallengeUI();
     document.getElementById('challengeTitle').innerText = "Final de joc";
@@ -1214,11 +1406,10 @@ function showEndScreen(message) {
     document.getElementById('closeModalBtn').style.display = 'block';
     document.getElementById('challengeModal').classList.remove('hidden');
 }
-
 function showRules() {
     resetChallengeUI();
     document.getElementById('challengeTitle').innerText = "Reguli rapide";
-    document.getElementById('challengeText').innerText = "Durata standard este 30 minute. Câștigă jucătorul cu cel mai mare XP la final. Victorie rapidă este posibilă doar după minutul 20, dacă ai minimum " + winningScore + " XP și cel puțin o Cheie Boss. Răspuns corect: +20 XP. Greșeli consecutive: -10, -20, -30 etc. Atacul fură random 10–45 XP. Boss-ul oferă damage ca XP și la înfrângere dă Cheie Boss. La 4 greșeli consecutive apare verificarea vocală. Ultima zonă este Co-Op Gate și cere 2 jucători.";
+    document.getElementById('challengeText').innerText = "Durata standard este 30 minute. Alege o clasă: Hacker, Defender, Analyst sau Speedrunner. La niveluri noi alegi abilități permanente. Evenimentele globale apar la fiecare 3 minute: Solar Storm, Virus Outbreak, Backup Restored sau Firewall Collapse. Boss-ul este vizibil pe hartă, se mișcă și te poate prinde. Victorie rapidă este posibilă doar după minutul 20, cu minimum " + winningScore + " XP și cel puțin o Cheie Boss.";
     document.getElementById('closeModalBtn').style.display = 'block';
     document.getElementById('challengeModal').classList.remove('hidden');
     setGameLocked(true);
