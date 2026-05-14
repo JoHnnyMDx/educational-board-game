@@ -14,11 +14,14 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 const playersRef = db.ref("players");
+const gameStateRef = db.ref("gameState");
 
 let myPlayerId = "";
-let localPlayer = { name: "", position: 0, score: 100, winner: false };
+let localPlayer = { name: "", position: 0, score: 100, winner: false, bossKeys: 0 };
 const boardSize = 40;
-const winningScore = 700;
+const gameDurationMs = 30 * 60 * 1000;
+const minFastWinMs = 20 * 60 * 1000;
+const winningScore = 1200;
 const bossMaxHP = 300;
 const coopGatePosition = boardSize - 1;
 let bossHP = bossMaxHP;
@@ -30,6 +33,9 @@ let gameFinished = false;
 let wrongAnswerStreak = 0;
 let waitingAtCoopGate = false;
 let activeQuestionType = "question";
+let gameState = {};
+let gameTimerInterval = null;
+let targetNoticeShown = false;
 
 const tileMeta = {
     question: { icon: "❓", label: "Quiz", className: "tile-question" },
@@ -45,7 +51,35 @@ const tileMeta = {
 
 function clampScore(value) { return Math.max(0, Number(value) || 0); }
 function randomBetween(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
-function getLevel(score) { return Math.floor(clampScore(score) / 100) + 1; }
+function getLevel(score) {
+    score = clampScore(score);
+    if (score >= 1000) return 4;
+    if (score >= 650) return 3;
+    if (score >= 300) return 2;
+    return 1;
+}
+function getMissionPhase(score) {
+    const level = getLevel(score);
+    return {
+        1: "Nivel 1: Recrut",
+        2: "Nivel 2: Infiltrare",
+        3: "Nivel 3: Asalt AI",
+        4: "Nivel 4: Finalist"
+    }[level];
+}
+function formatTime(ms) {
+    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
+    const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+    return `${minutes}:${seconds}`;
+}
+function getElapsedMs() {
+    if (!gameState.startedAt) return 0;
+    return Math.max(0, Date.now() - Number(gameState.startedAt));
+}
+function canFastWin() {
+    return getElapsedMs() >= minFastWinMs;
+}
 function cleanName(name) { return name.replace(/[<>]/g, "").slice(0, 24).trim(); }
 
 function setGameLocked(value) {
@@ -78,11 +112,15 @@ function updateHud() {
     const streakEl = document.getElementById('wrongStreakLabel');
     const bossEl = document.getElementById('bossHpLabel');
     const winningEl = document.getElementById('winningScoreLabel');
+    const phaseEl = document.getElementById('missionPhaseLabel');
+    const keysEl = document.getElementById('bossKeysLabel');
     if (scoreEl) scoreEl.innerText = localPlayer.score;
     if (levelEl) levelEl.innerText = getLevel(localPlayer.score);
     if (streakEl) streakEl.innerText = wrongAnswerStreak;
     if (bossEl) bossEl.innerText = bossHP;
     if (winningEl) winningEl.innerText = winningScore;
+    if (phaseEl) phaseEl.innerText = getMissionPhase(localPlayer.score);
+    if (keysEl) keysEl.innerText = localPlayer.bossKeys || 0;
 }
 
 function resetChallengeUI() {
@@ -302,14 +340,16 @@ document.getElementById('joinGameBtn').addEventListener('click', () => {
     let name = cleanName(document.getElementById('playerNameInput').value);
     if (name.length < 3) return alert("Introdu un nume valid!");
     myPlayerId = "agent_" + Math.random().toString(36).substr(2, 9);
-    localPlayer = { name, position: 0, score: 100, winner: false };
+    localPlayer = { name, position: 0, score: 100, winner: false, bossKeys: 0 };
     playersRef.child(myPlayerId).set(localPlayer);
+    initSharedGameState();
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('gameUI').style.display = 'block';
     document.getElementById('displayName').innerText = name;
     updateHud();
     initBoard();
     listenToNetwork();
+    listenToGameState();
 });
 
 document.getElementById('playerNameInput').addEventListener('keydown', event => {
@@ -317,6 +357,7 @@ document.getElementById('playerNameInput').addEventListener('keydown', event => 
 });
 
 document.getElementById('rulesBtn').addEventListener('click', showRules);
+document.getElementById('resetArenaBtn').addEventListener('click', requestNewArenaSession);
 document.getElementById('closeModalBtn').addEventListener('click', () => {
     closeMissionModal();
     if (!gameFinished) setGameLocked(false);
@@ -345,6 +386,110 @@ function listenToNetwork() {
         const winners = Object.values(allNetworkPlayers).filter(p => p.winner);
         if (winners.length && !gameFinished) announceExternalWinner(winners[0]);
     });
+}
+
+function initSharedGameState() {
+    gameStateRef.transaction(state => {
+        if (!state || state.status === "ended") {
+            return {
+                status: "running",
+                startedAt: firebase.database.ServerValue.TIMESTAMP,
+                durationMs: gameDurationMs,
+                minFastWinMs,
+                winningScore,
+                sessionId: Date.now()
+            };
+        }
+        return state;
+    });
+}
+
+function listenToGameState() {
+    gameStateRef.on("value", snapshot => {
+        gameState = snapshot.val() || {};
+        updateSessionClock();
+        if (gameState.status === "ended") {
+            gameFinished = true;
+            setGameLocked(true);
+            showEndScreen(gameState.message || `🏁 Joc încheiat. Câștigător: ${gameState.winnerName || "necunoscut"}.`);
+            return;
+        }
+        if (!gameTimerInterval) {
+            gameTimerInterval = setInterval(updateSessionClock, 1000);
+        }
+    });
+}
+
+function updateSessionClock() {
+    const timerEl = document.getElementById('sessionTimerLabel');
+    const progressEl = document.getElementById('sessionProgressFill');
+    const fastWinEl = document.getElementById('fastWinLabel');
+    if (!gameState.startedAt) return;
+
+    const duration = Number(gameState.durationMs || gameDurationMs);
+    const elapsed = getElapsedMs();
+    const remaining = Math.max(0, duration - elapsed);
+    if (timerEl) timerEl.innerText = formatTime(remaining);
+    if (progressEl) progressEl.style.width = `${Math.min(100, (elapsed / duration) * 100)}%`;
+    if (fastWinEl) fastWinEl.innerText = canFastWin() ? "Victorie rapidă activă" : `Victorie rapidă după ${formatTime(minFastWinMs - elapsed)}`;
+
+    if (remaining <= 0 && gameState.status !== "ended") {
+        finishGameByTime();
+    }
+}
+
+function getTopPlayer() {
+    const players = Object.values(allNetworkPlayers || {});
+    if (!players.length && localPlayer.name) return localPlayer;
+    return players.sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+}
+
+function finishGameByTime() {
+    const top = getTopPlayer();
+    if (!top) return;
+    const message = `⏱️ Timpul de 30 minute s-a încheiat! Câștigător: ${top.name} cu ${top.score || 0} XP.`;
+    gameStateRef.transaction(state => {
+        if (state && state.status === "running") {
+            state.status = "ended";
+            state.endedAt = firebase.database.ServerValue.TIMESTAMP;
+            state.winnerName = top.name;
+            state.winnerScore = top.score || 0;
+            state.reason = "time";
+            state.message = message;
+        }
+        return state;
+    });
+}
+
+function finishGameByFastWin() {
+    const message = `🏆 VICTORIE RAPIDĂ! ${localPlayer.name} a atins ${localPlayer.score} XP după minutul 20 și a obținut cheia Boss.`;
+    gameStateRef.transaction(state => {
+        if (state && state.status === "running") {
+            state.status = "ended";
+            state.endedAt = firebase.database.ServerValue.TIMESTAMP;
+            state.winnerName = localPlayer.name;
+            state.winnerScore = localPlayer.score;
+            state.reason = "fast-win";
+            state.message = message;
+        }
+        return state;
+    });
+}
+
+function requestNewArenaSession() {
+    const ok = confirm("Resetezi arena pentru o sesiune nouă de 30 minute? Se vor șterge jucătorii și scorurile curente.");
+    if (!ok) return;
+    playersRef.remove();
+    gameStateRef.set({
+        status: "running",
+        startedAt: firebase.database.ServerValue.TIMESTAMP,
+        durationMs: gameDurationMs,
+        minFastWinMs,
+        winningScore,
+        sessionId: Date.now()
+    });
+    alert("Arena a fost resetată. Elevii se pot reconecta.");
+    location.reload();
 }
 
 function updateBoardLive(players) {
@@ -621,8 +766,9 @@ function launchBossBattle() {
                 rewardCorrect(damage, `Lovitură reușită. Damage: ${damage}`);
                 updateHud();
                 if (bossHP <= 0) {
-                    alert("🏆 BOSS ÎNVINS! Bonus final +100 XP. AI Core se regenerează pentru următorii jucători.");
+                    alert("🏆 BOSS ÎNVINS! Bonus final +100 XP și +1 Cheie Boss. AI Core se regenerează pentru următorii jucători.");
                     localPlayer.score += 100;
+                    localPlayer.bossKeys = (localPlayer.bossKeys || 0) + 1;
                     bossHP = bossMaxHP;
                     syncPlayer();
                     modal.classList.add('hidden');
@@ -848,13 +994,22 @@ function startMemoryGame() {
 // 11. FINAL JOC ȘI REGULI
 // ==========================================
 function checkWinCondition() {
-    if (gameFinished) return;
-    if (localPlayer.score >= winningScore) {
+    if (gameFinished || !myPlayerId) return;
+
+    if (localPlayer.score >= winningScore && !canFastWin()) {
+        if (!targetNoticeShown) {
+            targetNoticeShown = true;
+            alert(`Ai atins ${winningScore} XP, dar finalul rapid se activează doar după minutul 20. Păstrează avantajul!`);
+        }
+        return;
+    }
+
+    if (localPlayer.score >= winningScore && canFastWin() && (localPlayer.bossKeys || 0) >= 1) {
         gameFinished = true;
         localPlayer.winner = true;
-        playersRef.child(myPlayerId).update({ winner: true, score: localPlayer.score });
+        playersRef.child(myPlayerId).update({ winner: true, score: localPlayer.score, bossKeys: localPlayer.bossKeys || 0 });
         setGameLocked(true);
-        showEndScreen(`🏆 VICTORIE! ${localPlayer.name} a câștigat jocul cu ${localPlayer.score} XP!`);
+        finishGameByFastWin();
     }
 }
 
@@ -875,7 +1030,7 @@ function showEndScreen(message) {
 function showRules() {
     resetChallengeUI();
     document.getElementById('challengeTitle').innerText = "Reguli rapide";
-    document.getElementById('challengeText').innerText = "Răspuns corect: +20 XP. Greșeli consecutive: -10, -20, -30 etc. Atacul fură random 10–45 XP. Boss-ul oferă damage ca XP. La 4 greșeli consecutive apare verificarea vocală. Ultima zonă este Co-Op Gate și cere 2 jucători. Jocul se termină la " + winningScore + " XP.";
+    document.getElementById('challengeText').innerText = "Durata standard este 30 minute. Câștigă jucătorul cu cel mai mare XP la final. Victorie rapidă este posibilă doar după minutul 20, dacă ai minimum " + winningScore + " XP și cel puțin o Cheie Boss. Răspuns corect: +20 XP. Greșeli consecutive: -10, -20, -30 etc. Atacul fură random 10–45 XP. Boss-ul oferă damage ca XP și la înfrângere dă Cheie Boss. La 4 greșeli consecutive apare verificarea vocală. Ultima zonă este Co-Op Gate și cere 2 jucători.";
     document.getElementById('closeModalBtn').style.display = 'block';
     document.getElementById('challengeModal').classList.remove('hidden');
     setGameLocked(true);
