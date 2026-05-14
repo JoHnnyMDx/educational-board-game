@@ -798,7 +798,15 @@ function launchVoiceChallenge(customText = "Spune parola în microfon pentru a c
     const text = document.getElementById('challengeText');
     const voiceBtn = document.getElementById('voiceChallengeBtn');
     const voiceResult = document.getElementById('voiceResult');
-    const secretPhrase = "calculatorul este inteligent";
+    const voicePhrases = [
+    "calculatorul este inteligent",
+    "datele circulă prin rețea",
+    "procesorul execută instrucțiuni",
+    "internetul folosește protocoale",
+    "memoria ram este volatilă"
+    ];
+
+    const secretPhrase = voicePhrases[Math.floor(Math.random() * voicePhrases.length)];
 
     title.innerText = "🎙️ VERIFICARE VOCALĂ";
     text.innerText = `${customText} Fraza: „${secretPhrase}”.`;
