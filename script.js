@@ -15,6 +15,7 @@ firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 const playersRef = db.ref("players");
 const gameStateRef = db.ref("gameState");
+const coopGateRef = db.ref("gameState/coopGate");
 
 let myPlayerId = "";
 let localPlayer = { name: "", position: 0, score: 100, winner: false, bossKeys: 0 };
@@ -36,6 +37,8 @@ let activeQuestionType = "question";
 let gameState = {};
 let gameTimerInterval = null;
 let targetNoticeShown = false;
+let coopMissionLocalOpen = false;
+let lastCoopMissionIdHandled = "";
 
 const tileMeta = {
     question: { icon: "❓", label: "Quiz", className: "tile-question" },
@@ -350,6 +353,7 @@ document.getElementById('joinGameBtn').addEventListener('click', () => {
     initBoard();
     listenToNetwork();
     listenToGameState();
+    listenToCoopGate();
 });
 
 document.getElementById('playerNameInput').addEventListener('keydown', event => {
@@ -380,9 +384,25 @@ function initBoard() {
 function listenToNetwork() {
     playersRef.on("value", (snapshot) => {
         allNetworkPlayers = snapshot.val() || {};
+
+        // Sincronizează local punctajul/poziția dacă Firebase le-a modificat din exterior
+        // ex: atac random, bonus co-op, resetare poziție după misiune.
+        if (myPlayerId && allNetworkPlayers[myPlayerId]) {
+            localPlayer.score = clampScore(allNetworkPlayers[myPlayerId].score);
+            localPlayer.position = Number(allNetworkPlayers[myPlayerId].position || 0);
+            localPlayer.winner = !!allNetworkPlayers[myPlayerId].winner;
+            localPlayer.bossKeys = Number(allNetworkPlayers[myPlayerId].bossKeys || 0);
+            updateHud();
+        }
+
         updateBoardLive(allNetworkPlayers);
         updateLeaderboard(allNetworkPlayers);
-        if (waitingAtCoopGate && localPlayer.position === coopGatePosition && !gameFinished) checkCoopGate();
+
+        // Dacă jucătorul așteaptă la Co-Op Gate, verificăm la fiecare update dacă a venit cineva.
+        if (waitingAtCoopGate && localPlayer.position === coopGatePosition && !gameFinished) {
+            checkCoopGate();
+        }
+
         const winners = Object.values(allNetworkPlayers).filter(p => p.winner);
         if (winners.length && !gameFinished) announceExternalWinner(winners[0]);
     });
@@ -397,7 +417,8 @@ function initSharedGameState() {
                 durationMs: gameDurationMs,
                 minFastWinMs,
                 winningScore,
-                sessionId: Date.now()
+                sessionId: Date.now(),
+                coopGate: null
             };
         }
         return state;
@@ -486,7 +507,8 @@ function requestNewArenaSession() {
         durationMs: gameDurationMs,
         minFastWinMs,
         winningScore,
-        sessionId: Date.now()
+        sessionId: Date.now(),
+        coopGate: null
     });
     alert("Arena a fost resetată. Elevii se pot reconecta.");
     location.reload();
@@ -679,65 +701,223 @@ function performAttack() {
 }
 
 // ==========================================
-// 7. CO-OP GATE
+// 7. CO-OP GATE - SINCRONIZAT PRIN FIREBASE
 // ==========================================
-function checkCoopGate() {
+
+function getPlayersAtCoopGate() {
     let playersHere = [];
     for (let id in allNetworkPlayers) {
-        if (allNetworkPlayers[id].position === coopGatePosition) playersHere.push({ id, ...allNetworkPlayers[id] });
+        if (Number(allNetworkPlayers[id].position) === coopGatePosition) {
+            playersHere.push({ id, ...allNetworkPlayers[id] });
+        }
     }
+    return playersHere;
+}
+
+function checkCoopGate() {
+    if (gameFinished || !myPlayerId) return;
+
+    const playersHere = getPlayersAtCoopGate();
 
     if (playersHere.length < 2) {
         waitingAtCoopGate = true;
-        alert("🔐 Ai ajuns la FIREWALL GATE! Ai nevoie de încă un agent pentru a continua.");
         setGameLocked(true);
+
+        coopGateRef.transaction(gate => {
+            if (!gate || gate.status === "completed" || gate.status === "cancelled") {
+                return {
+                    status: "waiting",
+                    waitingIds: [myPlayerId],
+                    updatedAt: firebase.database.ServerValue.TIMESTAMP
+                };
+            }
+
+            if (gate.status === "waiting") {
+                const waitingIds = Array.isArray(gate.waitingIds) ? gate.waitingIds : [];
+                if (!waitingIds.includes(myPlayerId)) waitingIds.push(myPlayerId);
+                gate.waitingIds = waitingIds;
+                gate.updatedAt = firebase.database.ServerValue.TIMESTAMP;
+            }
+
+            return gate;
+        });
+
+        alert("🔐 Ai ajuns la FIREWALL GATE! Așteaptă încă un agent pe aceeași zonă.");
         return;
     }
 
     waitingAtCoopGate = false;
-    launchCoopMission(playersHere.slice(0, 2));
+    createCoopMission(playersHere);
 }
 
-function launchCoopMission(playersHere) {
+function createCoopMission(playersHere) {
+    const participants = playersHere
+        .slice(0, 2)
+        .map(p => ({
+            id: p.id,
+            name: p.name || "Agent",
+            score: clampScore(p.score || 100)
+        }));
+
+    if (!participants.some(p => p.id === myPlayerId)) return;
+
+    coopGateRef.transaction(gate => {
+        // Dacă există deja o misiune activă, nu creăm alta.
+        if (gate && gate.status === "active") return gate;
+
+        // Dacă misiunea precedentă a fost completată, permitem o misiune nouă.
+        const questionIndex = Math.floor(Math.random() * questionsDB.length);
+
+        return {
+            status: "active",
+            missionId: "coop_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6),
+            participants,
+            questionIndex,
+            createdBy: myPlayerId,
+            createdAt: firebase.database.ServerValue.TIMESTAMP
+        };
+    });
+}
+
+function listenToCoopGate() {
+    coopGateRef.on("value", snapshot => {
+        const gate = snapshot.val();
+
+        if (!gate) return;
+
+        if (gate.status === "active") {
+            const participantIds = (gate.participants || []).map(p => p.id);
+
+            if (
+                participantIds.includes(myPlayerId) &&
+                localPlayer.position === coopGatePosition &&
+                gate.missionId !== lastCoopMissionIdHandled
+            ) {
+                lastCoopMissionIdHandled = gate.missionId;
+                coopMissionLocalOpen = true;
+                waitingAtCoopGate = false;
+                launchCoopMission(gate);
+            }
+        }
+
+        if (gate.status === "completed") {
+            const participantIds = (gate.participants || []).map(p => p.id);
+
+            if (participantIds.includes(myPlayerId) && coopMissionLocalOpen) {
+                coopMissionLocalOpen = false;
+                document.getElementById('challengeModal').classList.add('hidden');
+                setGameLocked(false);
+
+                if (gate.success) {
+                    alert("✅ Misiunea Co-Op a fost finalizată! Ați primit bonus și reveniți la START.");
+                }
+            }
+
+            // Curățăm poarta după câteva secunde, dar doar creatorul/sau primul participant încearcă.
+            if (participantIds[0] === myPlayerId) {
+                setTimeout(() => {
+                    coopGateRef.transaction(current => {
+                        if (current && current.status === "completed" && current.missionId === gate.missionId) {
+                            return null;
+                        }
+                        return current;
+                    });
+                }, 3000);
+            }
+        }
+
+        if (gate.status === "waiting") {
+            const playersHere = getPlayersAtCoopGate();
+            if (playersHere.length >= 2 && localPlayer.position === coopGatePosition && !gameFinished) {
+                createCoopMission(playersHere);
+            }
+        }
+    });
+}
+
+function launchCoopMission(gate) {
     resetChallengeUI();
+    setGameLocked(true);
+
     const modal = document.getElementById('challengeModal');
     const title = document.getElementById('challengeTitle');
     const text = document.getElementById('challengeText');
     const ansContainer = document.getElementById('answersContainer');
-    let qData = questionsDB[Math.floor(Math.random() * questionsDB.length)];
+
+    const participants = gate.participants || [];
+    const qData = questionsDB[Number(gate.questionIndex || 0)] || questionsDB[0];
 
     title.innerText = "🤝 MISIUNE CO-OP: Spargerea Firewall-ului";
-    text.innerText = `Agenți conectați: ${playersHere.map(p => p.name).join(' + ')}. Rezolvați provocarea pentru a reseta poarta și a primi bonus.`;
+    text.innerText = `Agenți conectați: ${participants.map(p => p.name).join(' + ')}. Rezolvați provocarea pentru a trece de Firewall Gate.`;
 
-    let p = document.createElement('p');
-    p.innerText = qData.q;
-    ansContainer.appendChild(p);
+    let questionEl = document.createElement('p');
+    questionEl.classList.add('coop-question');
+    questionEl.innerText = qData.q;
+    ansContainer.appendChild(questionEl);
 
     qData.options.forEach((opt, index) => {
         let btn = document.createElement('button');
         btn.classList.add('answer-btn');
         btn.innerText = opt;
+
         btn.onclick = () => {
             if (index === qData.correct) {
-                alert("✅ Misiune co-op reușită! Ambii agenți primesc +50 XP și revin la START.");
-                playersHere.forEach(p => {
-                    playersRef.child(p.id).update({ score: clampScore((p.score || 100) + 50), position: 0 });
-                });
-                if (playersHere.some(p => p.id === myPlayerId)) {
-                    localPlayer.score += 50;
-                    localPlayer.position = 0;
-                    syncPlayer();
-                }
-                modal.classList.add('hidden');
-                setGameLocked(false);
+                completeCoopMission(gate, true);
             } else {
-                applyWrongPenalty("Misiune co-op eșuată");
+                const launchedVoice = applyWrongPenalty("Misiune co-op eșuată");
+                if (!launchedVoice) {
+                    alert("Încercați din nou împreună. Poarta rămâne blocată până răspundeți corect.");
+                }
             }
         };
+
         ansContainer.appendChild(btn);
     });
 
     modal.classList.remove('hidden');
+}
+
+function completeCoopMission(gate, success) {
+    coopGateRef.transaction(current => {
+        if (!current || current.status !== "active" || current.missionId !== gate.missionId) {
+            return current;
+        }
+
+        current.status = "completed";
+        current.success = success;
+        current.completedBy = myPlayerId;
+        current.completedAt = firebase.database.ServerValue.TIMESTAMP;
+
+        return current;
+    }, (error, committed, snapshot) => {
+        if (error || !committed) return;
+
+        const completedGate = snapshot.val();
+        if (!completedGate || completedGate.completedBy !== myPlayerId || !completedGate.success) return;
+
+        const participants = completedGate.participants || [];
+
+        participants.forEach(p => {
+            playersRef.child(p.id).transaction(player => {
+                if (!player) return player;
+                player.score = clampScore((player.score || 100) + 50);
+                player.position = 0;
+                return player;
+            });
+        });
+
+        if (participants.some(p => p.id === myPlayerId)) {
+            localPlayer.score += 50;
+            localPlayer.position = 0;
+            waitingAtCoopGate = false;
+            coopMissionLocalOpen = false;
+            syncPlayer();
+        }
+
+        alert("✅ Misiune co-op reușită! Ambii agenți primesc +50 XP și revin la START.");
+        document.getElementById('challengeModal').classList.add('hidden');
+        setGameLocked(false);
+    });
 }
 
 // ==========================================
