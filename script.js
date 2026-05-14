@@ -16,12 +16,20 @@ const db = firebase.database();
 const playersRef = db.ref("players");
 
 let myPlayerId = "";
-let localPlayer = { name: "", position: 0, score: 100 };
-const boardSize = 40; 
+let localPlayer = { name: "", position: 0, score: 100, winner: false };
+const boardSize = 40;
+const winningScore = 700;
+const bossMaxHP = 300;
+const coopGatePosition = boardSize - 1;
+let bossHP = bossMaxHP;
 let allNetworkPlayers = {};
-let currentActiveMinigame = ""; 
+let currentActiveMinigame = "";
 let localTileMap = {};
 let gameLocked = false;
+let gameFinished = false;
+let wrongAnswerStreak = 0;
+let waitingAtCoopGate = false;
+let activeQuestionType = "question";
 
 const tileMeta = {
     question: { icon: "❓", label: "Quiz", className: "tile-question" },
@@ -29,25 +37,21 @@ const tileMeta = {
     minigame: { icon: "🕹️", label: "Mini", className: "tile-minigame" },
     attack: { icon: "⚔️", label: "Atac", className: "tile-attack" },
     boost: { icon: "🟢", label: "Boost", className: "tile-boost" },
+    boss: { icon: "👾", label: "Boss", className: "tile-boss" },
+    voice: { icon: "🎙️", label: "Voice", className: "tile-voice" },
+    coop: { icon: "🔐🤝", label: "Co-Op Gate", className: "tile-coop" },
     empty: { icon: "", label: "Safe", className: "tile-empty" }
 };
 
-function clampScore(value) {
-    return Math.max(0, Number(value) || 0);
-}
-
-function getLevel(score) {
-    return Math.floor(clampScore(score) / 100) + 1;
-}
-
-function cleanName(name) {
-    return name.replace(/[<>]/g, "").slice(0, 24).trim();
-}
+function clampScore(value) { return Math.max(0, Number(value) || 0); }
+function randomBetween(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function getLevel(score) { return Math.floor(clampScore(score) / 100) + 1; }
+function cleanName(name) { return name.replace(/[<>]/g, "").slice(0, 24).trim(); }
 
 function setGameLocked(value) {
     gameLocked = value;
     const rollBtn = document.getElementById('rollDiceBtn');
-    if (rollBtn) rollBtn.disabled = value;
+    if (rollBtn) rollBtn.disabled = value || gameFinished;
 }
 
 function playTone(type = "click") {
@@ -56,9 +60,9 @@ function playTone(type = "click") {
         const ctx = new AudioContext();
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
-        const freq = { click: 220, win: 680, loss: 120, dice: 420, attack: 90, boost: 760 }[type] || 220;
+        const freq = { click: 220, win: 680, loss: 120, dice: 420, attack: 90, boost: 760, boss: 55, voice: 520 }[type] || 220;
         osc.frequency.value = freq;
-        osc.type = type === "attack" ? "sawtooth" : "square";
+        osc.type = type === "attack" || type === "boss" ? "sawtooth" : "square";
         gain.gain.setValueAtTime(0.04, ctx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
         osc.connect(gain);
@@ -66,6 +70,19 @@ function playTone(type = "click") {
         osc.start();
         osc.stop(ctx.currentTime + 0.18);
     } catch (e) {}
+}
+
+function updateHud() {
+    const scoreEl = document.getElementById('playerScore');
+    const levelEl = document.getElementById('playerLevel');
+    const streakEl = document.getElementById('wrongStreakLabel');
+    const bossEl = document.getElementById('bossHpLabel');
+    const winningEl = document.getElementById('winningScoreLabel');
+    if (scoreEl) scoreEl.innerText = localPlayer.score;
+    if (levelEl) levelEl.innerText = getLevel(localPlayer.score);
+    if (streakEl) streakEl.innerText = wrongAnswerStreak;
+    if (bossEl) bossEl.innerText = bossHP;
+    if (winningEl) winningEl.innerText = winningScore;
 }
 
 function resetChallengeUI() {
@@ -76,15 +93,21 @@ function resetChallengeUI() {
     document.getElementById('miniGameStats').style.display = 'none';
     document.getElementById('answersContainer').innerHTML = '';
     document.getElementById('retryBtn').style.display = 'none';
+    document.getElementById('voiceChallengeBtn').style.display = 'none';
+    document.getElementById('voiceResult').innerText = '';
+    document.getElementById('closeModalBtn').style.display = 'none';
 }
 
+function closeMissionModal() {
+    document.getElementById('challengeModal').classList.add('hidden');
+}
 
 // ==========================================
 // 2. SISTEM ANTI-FRAUDĂ / DISCIPLINĂ DE JOC
 // ==========================================
 document.addEventListener('contextmenu', event => {
     event.preventDefault();
-    if (myPlayerId) {
+    if (myPlayerId && !gameFinished) {
         alert('⚠️ SECURITY BREACH: click dreapta blocat. -5 XP.');
         localPlayer.score = clampScore(localPlayer.score - 5);
         syncPlayer();
@@ -95,10 +118,9 @@ document.addEventListener('keydown', function(event) {
     const blockedShortcut = event.key === 'F12' ||
         (event.ctrlKey && ['s', 'u'].includes(event.key.toLowerCase())) ||
         (event.ctrlKey && event.shiftKey && ['i', 'j', 'c'].includes(event.key.toLowerCase()));
-
     if (blockedShortcut) {
         event.preventDefault();
-        if (myPlayerId) {
+        if (myPlayerId && !gameFinished) {
             alert('⚠️ SECURITY BREACH: tentativă de ocolire a jocului. -10 XP.');
             localPlayer.score = clampScore(localPlayer.score - 10);
             syncPlayer();
@@ -109,7 +131,7 @@ document.addEventListener('keydown', function(event) {
 document.addEventListener('selectstart', event => event.preventDefault());
 
 // ==========================================
-// 3. BAZA DE DATE MASIVĂ - 100+ ÎNTREBĂRI
+// 3. BAZA DE DATE ÎNTREBĂRI
 // ==========================================
 const questionsDB = [
     // --- Cap 6.1 Schema funcțională ---
@@ -238,7 +260,7 @@ const triviaDB = [
 ];
 
 // ==========================================
-// 4. GENERATOR ALEATORIU DE HARTĂ
+// 4. GENERATOR HARTĂ
 // ==========================================
 function generateRandomBoard() {
     let eventsPool = [];
@@ -247,7 +269,9 @@ function generateRandomBoard() {
     for(let i=0; i<4; i++) eventsPool.push('minigame');
     for(let i=0; i<5; i++) eventsPool.push('attack');
     for(let i=0; i<4; i++) eventsPool.push('boost');
-    for(let i=0; i<12; i++) eventsPool.push('empty');
+    for(let i=0; i<3; i++) eventsPool.push('boss');
+    for(let i=0; i<2; i++) eventsPool.push('voice');
+    for(let i=0; i<7; i++) eventsPool.push('empty');
 
     for (let i = eventsPool.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -255,43 +279,50 @@ function generateRandomBoard() {
     }
 
     localTileMap = {};
-    for(let i = 1; i < boardSize; i++) {
-        localTileMap[i] = eventsPool[i - 1];
-    }
+    for(let i = 1; i < boardSize; i++) { localTileMap[i] = eventsPool[i - 1] || 'empty'; }
+    localTileMap[coopGatePosition] = 'coop';
     updateBoardVisuals();
 }
 
 function updateBoardVisuals() {
-    for(let i = 1; i < boardSize; i++) {
+    for(let i = 0; i < boardSize; i++) {
         let cell = document.getElementById(`cell-${i}`);
         if(!cell) continue;
-        let type = localTileMap[i] || 'empty';
-        let meta = tileMeta[type] || tileMeta.empty;
+        let type = i === 0 ? 'start' : (localTileMap[i] || 'empty');
+        let meta = i === 0 ? { icon: '🚀', label: 'Start', className: 'tile-start' } : (tileMeta[type] || tileMeta.empty);
         cell.className = `cell ${meta.className}`;
-        cell.innerHTML = `<span class="zone-title">Zona ${i}</span><span class="zone-icon">${meta.icon}</span><small>${meta.label}</small>`;
+        cell.innerHTML = `<span class="zone-title">${i === 0 ? 'START' : 'Zona ' + i}</span><span class="zone-icon">${meta.icon}</span><small>${meta.label}</small>`;
     }
 }
 
 // ==========================================
-// 5. AUTENTIFICARE ȘI LOGICA MULTIPLAYER
+// 5. AUTENTIFICARE ȘI MULTIPLAYER
 // ==========================================
 document.getElementById('joinGameBtn').addEventListener('click', () => {
     let name = cleanName(document.getElementById('playerNameInput').value);
     if (name.length < 3) return alert("Introdu un nume valid!");
     myPlayerId = "agent_" + Math.random().toString(36).substr(2, 9);
-    localPlayer = { name, position: 0, score: 100, level: 1, joinedAt: firebase.database.ServerValue.TIMESTAMP };
+    localPlayer = { name, position: 0, score: 100, winner: false };
     playersRef.child(myPlayerId).set(localPlayer);
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('gameUI').style.display = 'block';
     document.getElementById('displayName').innerText = name;
+    updateHud();
     initBoard();
-    listenToNetwork(); 
+    listenToNetwork();
 });
 
-window.addEventListener('beforeunload', () => {
-    playersRef.off();
-    if (myPlayerId) playersRef.child(myPlayerId).remove();
+document.getElementById('playerNameInput').addEventListener('keydown', event => {
+    if (event.key === 'Enter') document.getElementById('joinGameBtn').click();
 });
+
+document.getElementById('rulesBtn').addEventListener('click', showRules);
+document.getElementById('closeModalBtn').addEventListener('click', () => {
+    closeMissionModal();
+    if (!gameFinished) setGameLocked(false);
+});
+
+window.addEventListener('beforeunload', () => { if (myPlayerId) playersRef.child(myPlayerId).remove(); });
 
 function initBoard() {
     const gameBoard = document.getElementById('gameBoard');
@@ -300,7 +331,6 @@ function initBoard() {
         let cell = document.createElement('div');
         cell.classList.add('cell');
         cell.id = `cell-${i}`;
-        cell.innerHTML = i === 0 ? '<span class="zone-title">START</span><span class="zone-icon">🚀</span><small>Launch</small>' : `<span class="zone-title">Zona ${i}</span>`;
         gameBoard.appendChild(cell);
     }
     generateRandomBoard();
@@ -311,137 +341,114 @@ function listenToNetwork() {
         allNetworkPlayers = snapshot.val() || {};
         updateBoardLive(allNetworkPlayers);
         updateLeaderboard(allNetworkPlayers);
+        if (waitingAtCoopGate && localPlayer.position === coopGatePosition && !gameFinished) checkCoopGate();
+        const winners = Object.values(allNetworkPlayers).filter(p => p.winner);
+        if (winners.length && !gameFinished) announceExternalWinner(winners[0]);
     });
 }
 
 function updateBoardLive(players) {
     document.querySelectorAll('.player-token').forEach(el => el.remove());
-    const playersByCell = {};
+    const offsets = {};
     for (let id in players) {
-        const p = players[id];
-        if (!playersByCell[p.position]) playersByCell[p.position] = [];
-        playersByCell[p.position].push({ id, ...p });
-    }
-
-    Object.keys(playersByCell).forEach(position => {
-        const cell = document.getElementById(`cell-${position}`);
-        if (!cell) return;
-        playersByCell[position].forEach((p, index) => {
+        let p = players[id];
+        let cell = document.getElementById(`cell-${p.position}`);
+        if (cell) {
+            offsets[p.position] = (offsets[p.position] || 0) + 1;
             let token = document.createElement('div');
             token.classList.add('player-token');
-            token.title = `${p.name} | ${p.score} XP`;
+            token.title = `${p.name} - ${p.score} XP`;
             token.innerText = (p.name || '?').charAt(0).toUpperCase();
-            token.style.backgroundColor = p.id === myPlayerId ? "#00ffcc" : "#ff0055";
-            token.style.color = p.id === myPlayerId ? "#00110d" : "#ffffff";
-            token.style.transform = `translate(${(index % 3) * 18}px, ${Math.floor(index / 3) * 18}px)`;
+            token.style.backgroundColor = id === myPlayerId ? "#00ffcc" : "#ff0055";
+            token.style.right = (5 + (offsets[p.position] - 1) * 18) + "px";
             cell.appendChild(token);
-        });
-    });
+        }
+    }
 }
 
 function updateLeaderboard(players) {
     let list = document.getElementById('leaderboardList');
     if (!list) return;
     list.innerHTML = "";
-    Object.values(players).sort((a, b) => b.score - a.score).forEach(p => {
+    Object.values(players).sort((a, b) => (b.score || 0) - (a.score || 0)).forEach((p, idx) => {
         let li = document.createElement('li');
-        li.innerText = `${p.name}: ${p.score} XP | Lv.${getLevel(p.score)}`;
+        li.innerText = `${idx + 1}. ${p.name}: ${p.score || 0} XP${p.winner ? ' 🏆' : ''}`;
         list.appendChild(li);
     });
 }
 
 function syncPlayer() {
     localPlayer.score = clampScore(localPlayer.score);
-    localPlayer.level = getLevel(localPlayer.score);
-    document.getElementById('playerScore').innerText = localPlayer.score;
-    const levelEl = document.getElementById('playerLevel');
-    if (levelEl) levelEl.innerText = localPlayer.level;
+    updateHud();
     if (myPlayerId) playersRef.child(myPlayerId).set(localPlayer);
+    checkWinCondition();
 }
 
 // ==========================================
-// 6. ZAR ȘI DECLANȘARE EVENIMENTE
+// 6. ZAR ȘI EVENIMENTE
 // ==========================================
 document.getElementById('rollDiceBtn').addEventListener('click', () => {
-    if (gameLocked) return;
-    playTone('dice');
+    if (gameLocked || gameFinished) return;
     setGameLocked(true);
-    let roll = Math.floor(Math.random() * 6) + 1;
+    playTone('dice');
+    let roll = randomBetween(1, 6);
     document.getElementById('diceResult').innerText = `Zar: 🎲 ${roll}`;
+
     localPlayer.position += roll;
     if (localPlayer.position >= boardSize) {
-        localPlayer.position -= boardSize;
+        localPlayer.position = localPlayer.position % boardSize;
         localPlayer.score += 50;
-        alert("🔄 CICLU COMPLETAT! Harta a fost regenerată. Bonus: +50 Energie.");
+        alert("🔄 CICLU COMPLETAT! Harta a fost regenerată. Bonus: +50 XP.");
         generateRandomBoard();
     }
     syncPlayer();
 
-    for (let id in allNetworkPlayers) {
-        if (id !== myPlayerId && allNetworkPlayers[id].position === localPlayer.position && localPlayer.position !== 0) {
-            alert(`⚔️ HACK ATTACK! L-ai interceptat pe ${allNetworkPlayers[id].name}! Ai furat +15 Energie.`);
-            localPlayer.score += 15;
-            syncPlayer();
-        }
+    interceptPlayersOnSameTile();
+
+    if (localPlayer.position === coopGatePosition) {
+        setTimeout(checkCoopGate, 350);
+        return;
     }
 
     let eventType = localTileMap[localPlayer.position];
-    if (eventType && eventType !== 'empty') {
-        setTimeout(() => handleTileEvent(eventType), 350);
-    } else {
-        setTimeout(() => setGameLocked(false), 350);
-    }
+    if (eventType && eventType !== 'empty') setTimeout(() => handleTileEvent(eventType), 350);
+    else setTimeout(() => setGameLocked(false), 350);
 });
+
+function interceptPlayersOnSameTile() {
+    for (let id in allNetworkPlayers) {
+        if (id !== myPlayerId && allNetworkPlayers[id].position === localPlayer.position && localPlayer.position !== 0) {
+            let stolenXP = randomBetween(5, 20);
+            playersRef.child(id).child('score').transaction(score => clampScore((score || 100) - stolenXP));
+            localPlayer.score += stolenXP;
+            alert(`⚔️ Interceptare! Ai furat ${stolenXP} XP de la ${allNetworkPlayers[id].name}.`);
+            syncPlayer();
+            break;
+        }
+    }
+}
 
 function handleTileEvent(type) {
     const modal = document.getElementById('challengeModal');
     const title = document.getElementById('challengeTitle');
     const text = document.getElementById('challengeText');
-    const ansContainer = document.getElementById('answersContainer');
-    const retryBtn = document.getElementById('retryBtn');
-    
+
     resetChallengeUI();
     setGameLocked(true);
 
-    if (type === 'question' || type === 'trivia') {
-        let dbPool = type === 'question' ? questionsDB : triviaDB;
-        let qData = dbPool[Math.floor(Math.random() * dbPool.length)];
-        title.innerText = type === 'question' ? "[Teorie]" : "[Cultură Generală]";
-        text.innerText = qData.q;
-        qData.options.forEach((opt, index) => {
-            let btn = document.createElement('button');
-            btn.classList.add('answer-btn');
-            btn.innerText = opt;
-            btn.onclick = () => {
-                if (index === qData.correct) {
-                    alert("✅ Corect! +20 XP");
-                    localPlayer.score += 20;
-                    playTone('win');
-                    modal.classList.add('hidden');
-                    setGameLocked(false);
-                } else {
-                    alert("❌ Răspuns greșit! Ai pierdut 10 XP.");
-                    localPlayer.score = clampScore(localPlayer.score - 10);
-                    ansContainer.innerHTML = ''; 
-                    retryBtn.style.display = 'block'; 
-                    retryBtn.onclick = () => handleTileEvent(type); 
-                }
-                syncPlayer();
-            };
-            ansContainer.appendChild(btn);
-        });
-        modal.classList.remove('hidden');
-    }
-    else if (type === 'attack') {
-        performAttack(25);
-        setGameLocked(false);
-    }
+    if (type === 'question' || type === 'trivia') launchQuestion(type);
+    else if (type === 'attack') { performAttack(); setGameLocked(false); }
     else if (type === 'boost') {
-        alert("🚀 OVERCLOCK! Primești 30 Energie bonus.");
-        localPlayer.score += 30;
+        playTone('boost');
+        let bonus = randomBetween(20, 45);
+        alert(`🚀 OVERCLOCK! Primești ${bonus} XP bonus.`);
+        localPlayer.score += bonus;
+        wrongAnswerStreak = 0;
         syncPlayer();
         setGameLocked(false);
     }
+    else if (type === 'boss') launchBossBattle();
+    else if (type === 'voice') launchVoiceChallenge("Ai nimerit pe zona vocală. Spune parola pentru a continua.");
     else if (type === 'minigame') {
         let games = ['snake', 'bugs', 'memory'];
         currentActiveMinigame = games[Math.floor(Math.random() * games.length)];
@@ -449,32 +456,257 @@ function handleTileEvent(type) {
     }
 }
 
-function performAttack(amount) {
+function applyWrongPenalty(reason = "Răspuns greșit") {
+    wrongAnswerStreak++;
+    let penalty = 10 * wrongAnswerStreak;
+    localPlayer.score = clampScore(localPlayer.score - penalty);
+    playTone('loss');
+    alert(`❌ ${reason}! Penalizare progresivă: -${penalty} XP.`);
+    syncPlayer();
+    if (wrongAnswerStreak >= 4) {
+        launchVoiceChallenge("Ai acumulat 4 greșeli consecutive. Pentru deblocare trebuie să spui fraza de verificare.");
+        return true;
+    }
+    return false;
+}
+
+function rewardCorrect(points = 20, message = "Corect") {
+    wrongAnswerStreak = 0;
+    localPlayer.score += points;
+    playTone('win');
+    alert(`✅ ${message}! +${points} XP.`);
+    syncPlayer();
+}
+
+function launchQuestion(type) {
+    activeQuestionType = type;
+    const modal = document.getElementById('challengeModal');
+    const title = document.getElementById('challengeTitle');
+    const text = document.getElementById('challengeText');
+    const ansContainer = document.getElementById('answersContainer');
+    const retryBtn = document.getElementById('retryBtn');
+    let dbPool = type === 'question' ? questionsDB : triviaDB;
+    let qData = dbPool[Math.floor(Math.random() * dbPool.length)];
+
+    title.innerText = type === 'question' ? "[Teorie]" : "[Cultură Generală]";
+    text.innerText = qData.q;
+
+    qData.options.forEach((opt, index) => {
+        let btn = document.createElement('button');
+        btn.classList.add('answer-btn');
+        btn.innerText = opt;
+        btn.onclick = () => {
+            if (index === qData.correct) {
+                rewardCorrect(20, "Răspuns corect");
+                modal.classList.add('hidden');
+                setGameLocked(false);
+            } else {
+                const launchedVoice = applyWrongPenalty("Răspuns greșit");
+                if (!launchedVoice) {
+                    ansContainer.innerHTML = '';
+                    retryBtn.innerText = `Reîncearcă întrebarea. Următoarea greșeală: -${10 * (wrongAnswerStreak + 1)} XP`;
+                    retryBtn.style.display = 'block';
+                    retryBtn.onclick = () => launchQuestion(type);
+                }
+            }
+        };
+        ansContainer.appendChild(btn);
+    });
+
+    modal.classList.remove('hidden');
+}
+
+function performAttack() {
     playTone('attack');
     let opponents = Object.keys(allNetworkPlayers).filter(id => id !== myPlayerId);
     if (opponents.length > 0) {
-        let targetId = opponents.sort((a, b) => (allNetworkPlayers[b].score || 0) - (allNetworkPlayers[a].score || 0))[0];
-        playersRef.child(targetId).child('score').transaction(score => clampScore((score || 100) - amount));
-        localPlayer.score += amount;
-        alert(`⚔️ Atac reușit! I-ai furat ${amount} XP lui ${allNetworkPlayers[targetId].name}.`);
+        let targetId = opponents[Math.floor(Math.random() * opponents.length)];
+        let stolenXP = randomBetween(10, 45);
+        playersRef.child(targetId).child('score').transaction(score => clampScore((score || 100) - stolenXP));
+        localPlayer.score += stolenXP;
+        alert(`⚔️ Atac random reușit! Ai furat ${stolenXP} XP de la ${allNetworkPlayers[targetId].name}.`);
     } else {
-        alert("Nu sunt alți agenți. Ai primit 10 XP bonus.");
-        localPlayer.score += 10;
+        let bonus = randomBetween(5, 20);
+        alert(`Nu sunt alți agenți. Ai primit ${bonus} XP bonus.`);
+        localPlayer.score += bonus;
     }
     syncPlayer();
 }
 
 // ==========================================
-// 7. MOTOR MINI-JOCURI
+// 7. CO-OP GATE
+// ==========================================
+function checkCoopGate() {
+    let playersHere = [];
+    for (let id in allNetworkPlayers) {
+        if (allNetworkPlayers[id].position === coopGatePosition) playersHere.push({ id, ...allNetworkPlayers[id] });
+    }
+
+    if (playersHere.length < 2) {
+        waitingAtCoopGate = true;
+        alert("🔐 Ai ajuns la FIREWALL GATE! Ai nevoie de încă un agent pentru a continua.");
+        setGameLocked(true);
+        return;
+    }
+
+    waitingAtCoopGate = false;
+    launchCoopMission(playersHere.slice(0, 2));
+}
+
+function launchCoopMission(playersHere) {
+    resetChallengeUI();
+    const modal = document.getElementById('challengeModal');
+    const title = document.getElementById('challengeTitle');
+    const text = document.getElementById('challengeText');
+    const ansContainer = document.getElementById('answersContainer');
+    let qData = questionsDB[Math.floor(Math.random() * questionsDB.length)];
+
+    title.innerText = "🤝 MISIUNE CO-OP: Spargerea Firewall-ului";
+    text.innerText = `Agenți conectați: ${playersHere.map(p => p.name).join(' + ')}. Rezolvați provocarea pentru a reseta poarta și a primi bonus.`;
+
+    let p = document.createElement('p');
+    p.innerText = qData.q;
+    ansContainer.appendChild(p);
+
+    qData.options.forEach((opt, index) => {
+        let btn = document.createElement('button');
+        btn.classList.add('answer-btn');
+        btn.innerText = opt;
+        btn.onclick = () => {
+            if (index === qData.correct) {
+                alert("✅ Misiune co-op reușită! Ambii agenți primesc +50 XP și revin la START.");
+                playersHere.forEach(p => {
+                    playersRef.child(p.id).update({ score: clampScore((p.score || 100) + 50), position: 0 });
+                });
+                if (playersHere.some(p => p.id === myPlayerId)) {
+                    localPlayer.score += 50;
+                    localPlayer.position = 0;
+                    syncPlayer();
+                }
+                modal.classList.add('hidden');
+                setGameLocked(false);
+            } else {
+                applyWrongPenalty("Misiune co-op eșuată");
+            }
+        };
+        ansContainer.appendChild(btn);
+    });
+
+    modal.classList.remove('hidden');
+}
+
+// ==========================================
+// 8. BOSS BATTLE
+// ==========================================
+function launchBossBattle() {
+    resetChallengeUI();
+    playTone('boss');
+    const modal = document.getElementById('challengeModal');
+    const title = document.getElementById('challengeTitle');
+    const text = document.getElementById('challengeText');
+    const ansContainer = document.getElementById('answersContainer');
+    let qData = questionsDB[Math.floor(Math.random() * questionsDB.length)];
+
+    title.innerText = `👾 BOSS BATTLE: AI CORE HP ${bossHP}/${bossMaxHP}`;
+    text.innerText = qData.q;
+
+    qData.options.forEach((opt, index) => {
+        let btn = document.createElement('button');
+        btn.classList.add('answer-btn');
+        btn.innerText = opt;
+        btn.onclick = () => {
+            if (index === qData.correct) {
+                let damage = randomBetween(25, 60);
+                bossHP = Math.max(0, bossHP - damage);
+                rewardCorrect(damage, `Lovitură reușită. Damage: ${damage}`);
+                updateHud();
+                if (bossHP <= 0) {
+                    alert("🏆 BOSS ÎNVINS! Bonus final +100 XP. AI Core se regenerează pentru următorii jucători.");
+                    localPlayer.score += 100;
+                    bossHP = bossMaxHP;
+                    syncPlayer();
+                    modal.classList.add('hidden');
+                    setGameLocked(false);
+                } else {
+                    launchBossBattle();
+                }
+            } else {
+                const launchedVoice = applyWrongPenalty("Boss-ul te-a lovit");
+                if (!launchedVoice) launchBossBattle();
+            }
+        };
+        ansContainer.appendChild(btn);
+    });
+
+    modal.classList.remove('hidden');
+}
+
+// ==========================================
+// 9. VOICE CHALLENGE
+// ==========================================
+function launchVoiceChallenge(customText = "Spune parola în microfon pentru a continua.") {
+    resetChallengeUI();
+    playTone('voice');
+    const modal = document.getElementById('challengeModal');
+    const title = document.getElementById('challengeTitle');
+    const text = document.getElementById('challengeText');
+    const voiceBtn = document.getElementById('voiceChallengeBtn');
+    const voiceResult = document.getElementById('voiceResult');
+    const secretPhrase = "calculatorul este inteligent";
+
+    title.innerText = "🎙️ VERIFICARE VOCALĂ";
+    text.innerText = `${customText} Fraza: „${secretPhrase}”.`;
+    voiceBtn.style.display = "block";
+    voiceResult.innerText = "";
+    modal.classList.remove('hidden');
+    setGameLocked(true);
+
+    voiceBtn.onclick = () => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            alert("Browserul nu suportă recunoaștere vocală. Folosește Google Chrome sau Microsoft Edge.");
+            document.getElementById('closeModalBtn').style.display = 'block';
+            return;
+        }
+        const recognition = new SpeechRecognition();
+        recognition.lang = "ro-RO";
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+        recognition.start();
+        voiceResult.innerText = "Ascult...";
+
+        recognition.onresult = event => {
+            let spokenText = event.results[0][0].transcript.toLowerCase().trim();
+            voiceResult.innerText = `Ai spus: „${spokenText}”`;
+            if (spokenText.includes(secretPhrase)) {
+                alert("✅ Verificare vocală reușită! +15 XP și greșelile consecutive se resetează.");
+                wrongAnswerStreak = 0;
+                localPlayer.score += 15;
+                syncPlayer();
+                modal.classList.add('hidden');
+                setGameLocked(false);
+            } else {
+                alert("❌ Fraza nu a fost recunoscută corect. -30 XP.");
+                localPlayer.score = clampScore(localPlayer.score - 30);
+                syncPlayer();
+            }
+        };
+        recognition.onerror = () => {
+            voiceResult.innerText = "Microfonul nu a putut fi folosit. Verifică permisiunile browserului.";
+        };
+    };
+}
+
+// ==========================================
+// 10. MINI-JOCURI
 // ==========================================
 function launchMinigame(gameType) {
+    resetChallengeUI();
     const modal = document.getElementById('challengeModal');
     const title = document.getElementById('challengeTitle');
     const text = document.getElementById('challengeText');
     const area = document.getElementById('miniGameArea');
-    const retryBtn = document.getElementById('retryBtn');
     area.style.display = 'block';
-    retryBtn.style.display = 'none';
     modal.classList.remove('hidden');
 
     if (gameType === 'snake') {
@@ -493,28 +725,24 @@ function launchMinigame(gameType) {
 }
 
 function minigameWin() {
-    playTone('win');
-    alert("✅ Succes! +20 XP");
-    localPlayer.score += 20;
-    syncPlayer();
+    rewardCorrect(25, "Mini-joc reușit");
     document.getElementById('challengeModal').classList.add('hidden');
     setGameLocked(false);
 }
 
 function minigameLoss() {
-    playTone('loss');
-    alert("❌ EȘEC CRITIC! -10 XP. Reîncearcă.");
-    localPlayer.score = clampScore(localPlayer.score - 10);
-    syncPlayer();
+    const launchedVoice = applyWrongPenalty("Eșec critic la mini-joc");
     document.getElementById('miniGameCanvas').style.display = 'none';
     document.getElementById('bugGameContainer').style.display = 'none';
     document.getElementById('memoryGameContainer').style.display = 'none';
-    const retryBtn = document.getElementById('retryBtn');
-    retryBtn.style.display = 'block';
-    retryBtn.onclick = () => launchMinigame(currentActiveMinigame);
+    if (!launchedVoice) {
+        const retryBtn = document.getElementById('retryBtn');
+        retryBtn.innerText = `Reîncearcă mini-jocul. Următoarea greșeală: -${10 * (wrongAnswerStreak + 1)} XP`;
+        retryBtn.style.display = 'block';
+        retryBtn.onclick = () => launchMinigame(currentActiveMinigame);
+    }
 }
 
-// --- SNAKE ---
 let snakeInterval;
 let snakeKeyHandler;
 function startSnakeGame() {
@@ -523,7 +751,7 @@ function startSnakeGame() {
     canvas.style.display = "block";
     let snake = [{x: 10, y: 10}];
     let food = {x: 15, y: 15};
-    let dx = 1, dy = 0; let score = 0; let box = 15;
+    let dx = 1, dy = 0, score = 0, box = 15;
     if(snakeKeyHandler) document.removeEventListener('keydown', snakeKeyHandler);
     snakeKeyHandler = (e) => {
         if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) e.preventDefault();
@@ -537,25 +765,20 @@ function startSnakeGame() {
     snakeInterval = setInterval(() => {
         let head = {x: snake[0].x + dx, y: snake[0].y + dy};
         if (head.x < 0 || head.x >= 20 || head.y < 0 || head.y >= 20 || snake.some(s => s.x === head.x && s.y === head.y)) {
-            clearInterval(snakeInterval); document.removeEventListener('keydown', snakeKeyHandler);
-            minigameLoss(); return;
+            clearInterval(snakeInterval); document.removeEventListener('keydown', snakeKeyHandler); minigameLoss(); return;
         }
         snake.unshift(head);
         if (head.x === food.x && head.y === food.y) {
             score++;
             food = {x: Math.floor(Math.random() * 20), y: Math.floor(Math.random() * 20)};
-            if (score >= 10) {
-                clearInterval(snakeInterval); document.removeEventListener('keydown', snakeKeyHandler);
-                minigameWin();
-            }
+            if (score >= 10) { clearInterval(snakeInterval); document.removeEventListener('keydown', snakeKeyHandler); minigameWin(); }
         } else snake.pop();
         ctx.fillStyle = "black"; ctx.fillRect(0, 0, 300, 300);
         ctx.fillStyle = "red"; ctx.fillRect(food.x * box, food.y * box, box, box);
         ctx.fillStyle = "#00ffcc"; snake.forEach(s => ctx.fillRect(s.x * box, s.y * box, box, box));
-    }, 120); 
+    }, 120);
 }
 
-// --- BUG SMASHER ---
 let bugSpawnTimer;
 let bugCountdown;
 function startBugGame() {
@@ -564,16 +787,13 @@ function startBugGame() {
     container.style.display = "block";
     stats.style.display = "block";
     container.innerHTML = '';
-    let score = 0; let timeLeft = 15;
+    let score = 0, timeLeft = 15;
     stats.innerText = `Timp: ${timeLeft}s | Erori: ${score}/10`;
     if(bugCountdown) clearInterval(bugCountdown);
     bugCountdown = setInterval(() => {
         timeLeft--;
         stats.innerText = `Timp: ${timeLeft}s | Erori: ${score}/10`;
-        if (timeLeft <= 0) {
-            clearInterval(bugCountdown); clearTimeout(bugSpawnTimer);
-            if (score >= 10) minigameWin(); else minigameLoss();
-        }
+        if (timeLeft <= 0) { clearInterval(bugCountdown); clearTimeout(bugSpawnTimer); score >= 10 ? minigameWin() : minigameLoss(); }
     }, 1000);
     function spawnBug() {
         if(timeLeft <= 0) return;
@@ -583,14 +803,8 @@ function startBugGame() {
         bug.style.top = Math.random() * 250 + 'px';
         bug.style.left = Math.random() * 250 + 'px';
         bug.onmousedown = () => {
-            score++;
-            stats.innerText = `Timp: ${timeLeft}s | Erori: ${score}/10`;
-            bug.remove();
-            if (score >= 10) {
-                clearInterval(bugCountdown);
-                clearTimeout(bugSpawnTimer);
-                minigameWin();
-            }
+            score++; stats.innerText = `Timp: ${timeLeft}s | Erori: ${score}/10`; bug.remove();
+            if (score >= 10) { clearInterval(bugCountdown); clearTimeout(bugSpawnTimer); minigameWin(); }
         };
         container.appendChild(bug);
         setTimeout(() => { if(bug.parentNode) bug.remove(); }, 1200);
@@ -599,15 +813,13 @@ function startBugGame() {
     spawnBug();
 }
 
-// --- MEMORY ---
 function startMemoryGame() {
     const container = document.getElementById('memoryGameContainer');
     container.style.display = "grid";
     container.innerHTML = '';
     const symbols = ['ROM', 'RAM', 'CPU', 'LAN'];
     let cardsData = [...symbols, ...symbols].sort(() => Math.random() - 0.5);
-    let hasFlippedCard = false; let lockBoard = false;
-    let firstCard, secondCard; let matchedPairs = 0;
+    let hasFlippedCard = false, lockBoard = false, firstCard, secondCard, matchedPairs = 0;
     cardsData.forEach(symbol => {
         let card = document.createElement('div');
         card.classList.add('memory-card');
@@ -631,3 +843,42 @@ function startMemoryGame() {
         container.appendChild(card);
     });
 }
+
+// ==========================================
+// 11. FINAL JOC ȘI REGULI
+// ==========================================
+function checkWinCondition() {
+    if (gameFinished) return;
+    if (localPlayer.score >= winningScore) {
+        gameFinished = true;
+        localPlayer.winner = true;
+        playersRef.child(myPlayerId).update({ winner: true, score: localPlayer.score });
+        setGameLocked(true);
+        showEndScreen(`🏆 VICTORIE! ${localPlayer.name} a câștigat jocul cu ${localPlayer.score} XP!`);
+    }
+}
+
+function announceExternalWinner(winner) {
+    gameFinished = true;
+    setGameLocked(true);
+    showEndScreen(`🏆 Joc încheiat! ${winner.name} a câștigat cu ${winner.score} XP.`);
+}
+
+function showEndScreen(message) {
+    resetChallengeUI();
+    document.getElementById('challengeTitle').innerText = "Final de joc";
+    document.getElementById('challengeText').innerText = message;
+    document.getElementById('closeModalBtn').style.display = 'block';
+    document.getElementById('challengeModal').classList.remove('hidden');
+}
+
+function showRules() {
+    resetChallengeUI();
+    document.getElementById('challengeTitle').innerText = "Reguli rapide";
+    document.getElementById('challengeText').innerText = "Răspuns corect: +20 XP. Greșeli consecutive: -10, -20, -30 etc. Atacul fură random 10–45 XP. Boss-ul oferă damage ca XP. La 4 greșeli consecutive apare verificarea vocală. Ultima zonă este Co-Op Gate și cere 2 jucători. Jocul se termină la " + winningScore + " XP.";
+    document.getElementById('closeModalBtn').style.display = 'block';
+    document.getElementById('challengeModal').classList.remove('hidden');
+    setGameLocked(true);
+}
+
+updateHud();
