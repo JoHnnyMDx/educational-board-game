@@ -3,18 +3,48 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Digital Heist Academy - Live Arena</title>
+    <title>Digital Heist Academy - Live Arena V4</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 </head>
 <body>
     <div id="loginScreen" class="modal">
-        <div class="modal-content login-card">
+        <div class="modal-content login-card wide-login">
             <p class="eyebrow">Digital Heist Academy</p>
             <h2>Autentificare Sistem</h2>
-            <p class="muted">Intră în arena live, colectează XP, atacă adversari și rezolvă misiuni de informatică.</p>
+            <p class="muted">Intră în arena live, alege clasa agentului și luptă împotriva AI Core.</p>
+
             <input type="text" id="playerNameInput" placeholder="Numele tău (ex. Ion Popescu)" maxlength="24" autocomplete="off">
+
+            <h3 class="class-title">Alege clasa jucătorului</h3>
+            <div class="class-picker">
+                <label class="class-card">
+                    <input type="radio" name="playerClass" value="hacker" checked>
+                    <span class="class-icon">💻</span>
+                    <strong>Hacker</strong>
+                    <small>+20% XP la atac, dar pierde mai mult la quiz greșit.</small>
+                </label>
+                <label class="class-card">
+                    <input type="radio" name="playerClass" value="defender">
+                    <span class="class-icon">🛡️</span>
+                    <strong>Defender</strong>
+                    <small>Pierde jumătate XP la greșeli și are bonus la boss.</small>
+                </label>
+                <label class="class-card">
+                    <input type="radio" name="playerClass" value="analyst">
+                    <span class="class-icon">🔍</span>
+                    <strong>Analyst</strong>
+                    <small>Primește hint la întrebări.</small>
+                </label>
+                <label class="class-card">
+                    <input type="radio" name="playerClass" value="speedrunner">
+                    <span class="class-icon">⚡</span>
+                    <strong>Speedrunner</strong>
+                    <small>Aruncă 2 zaruri și păstrează cel mai mare.</small>
+                </label>
+            </div>
+
             <button id="joinGameBtn" class="answer-btn primary-action">Conectare la Rețea</button>
         </div>
     </div>
@@ -24,25 +54,37 @@
             <div>
                 <p class="eyebrow">NeoCity Live Network</p>
                 <h1>Digital Heist Academy</h1>
-                <p class="muted">Durată: <strong>30 minute</strong>. Final la timp sau victorie rapidă după minutul 20.</p>
+                <p class="muted">Durată standard: <strong>30 minute</strong>. Scor țintă: <strong><span id="winningScoreLabel">1200</span> XP</strong>.</p>
             </div>
 
-            <div class="stats-grid">
+            <div class="session-row">
+                <div class="timer-card">
+                    <span>Timp rămas</span>
+                    <strong id="sessionTimerLabel">30:00</strong>
+                </div>
+                <div class="progress-wrap">
+                    <div id="sessionProgressFill" class="progress-fill"></div>
+                </div>
+                <div class="timer-card small-timer"><span id="fastWinLabel">Victorie rapidă după 20:00</span></div>
+            </div>
+
+            <div class="stats-grid extended-stats">
                 <div class="stat-card"><span>Agent</span><strong id="displayName">---</strong></div>
+                <div class="stat-card"><span>Clasă</span><strong id="playerClassLabel">---</strong></div>
                 <div class="stat-card"><span>Energie</span><strong><span id="playerScore">100</span> XP</strong></div>
-                <div class="stat-card"><span>Timp rămas</span><strong id="sessionTimerLabel">30:00</strong></div>
                 <div class="stat-card"><span>Nivel</span><strong id="playerLevel">1</strong></div>
                 <div class="stat-card"><span>Fază</span><strong id="missionPhaseLabel">Nivel 1: Recrut</strong></div>
                 <div class="stat-card"><span>Greșeli</span><strong id="wrongStreakLabel">0</strong></div>
-                <div class="stat-card boss-stat"><span>AI Core Boss</span><strong><span id="bossHpLabel">300</span>/300 HP</strong></div>
                 <div class="stat-card"><span>Chei Boss</span><strong id="bossKeysLabel">0</strong></div>
-                <div class="stat-card"><span>Scor victorie rapidă</span><strong><span id="winningScoreLabel">1200</span> XP</strong></div>
+                <div class="stat-card boss-stat"><span>AI Core Boss</span><strong><span id="bossHpLabel">300</span>/300 HP</strong></div>
+                <div class="stat-card boss-stat"><span>Boss pe hartă</span><strong id="bossMapLabel">---</strong></div>
+                <div id="globalEventCard" class="stat-card event-stat"><span>Eveniment global</span><strong id="globalEventLabel">Niciun eveniment activ</strong></div>
             </div>
 
-            <div class="session-progress" aria-label="Progres sesiune">
-                <div id="sessionProgressFill"></div>
+            <div class="skill-panel glass-panel-lite">
+                <span>Abilități deblocate:</span>
+                <strong id="skillsLabel">Nicio abilitate</strong>
             </div>
-            <p id="fastWinLabel" class="fast-win-label">Victorie rapidă după 20:00</p>
 
             <div class="actions-row">
                 <button id="rollDiceBtn">Aruncă Zarul 🎲</button>
