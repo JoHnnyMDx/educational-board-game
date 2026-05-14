@@ -5,56 +5,59 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Digital Heist Academy - Live Arena</title>
     <link rel="stylesheet" href="style.css">
-    
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 </head>
 <body>
     <div id="loginScreen" class="modal">
-        <div class="modal-content">
+        <div class="modal-content login-card">
+            <p class="eyebrow">Digital Heist Academy</p>
             <h2>Autentificare Sistem</h2>
-            <input type="text" id="playerNameInput" placeholder="Numele tău (ex. Ion Popescu)" />
-            <button id="joinGameBtn" class="answer-btn">Conectare la Rețea</button>
+            <p class="muted">Intră în arena live, colectează XP și rezolvă provocări de informatică.</p>
+            <input type="text" id="playerNameInput" placeholder="Numele tău (ex. Ion Popescu)" maxlength="24" autocomplete="off" />
+            <button id="joinGameBtn" class="answer-btn primary-action">Conectare la Rețea</button>
         </div>
     </div>
 
-    <div id="gameUI" style="display: none;">
-        <div class="hud">
-            <h1>NeoCity Live Network</h1>
+    <main id="gameUI" class="app-shell" style="display: none;">
+        <section class="hud glass-panel">
+            <div>
+                <p class="eyebrow">NeoCity Live Network</p>
+                <h1>Digital Heist Academy</h1>
+            </div>
             <div class="stats">
                 <p>Agent: <span id="displayName">---</span></p>
-                <p>Energie (XP): <span id="playerScore">100</span></p>
+                <p>Energie: <span id="playerScore">100</span> XP</p>
+                <p>Nivel: <span id="playerLevel">1</span></p>
             </div>
             <button id="rollDiceBtn">Aruncă Zarul 🎲</button>
-            <p id="diceResult"></p>
-        </div>
+            <p id="diceResult" class="dice-result">Pregătit pentru misiune.</p>
+        </section>
 
-        <div id="gameBoard" class="board-large"></div>
-        
-        <div class="leaderboard">
-            <h3>Top Agenți (Live)</h3>
-            <ul id="leaderboardList"></ul>
-        </div>
-    </div>
+        <section class="arena-layout">
+            <div id="gameBoard" class="board-large" aria-label="Tabla jocului"></div>
+            <aside class="leaderboard glass-panel">
+                <h3>Top Agenți Live</h3>
+                <ul id="leaderboardList"></ul>
+            </aside>
+        </section>
+    </main>
 
     <div id="challengeModal" class="modal hidden">
-        <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-content challenge-card">
+            <p class="eyebrow">Mission Node</p>
             <h2 id="challengeTitle">Provocare!</h2>
             <p id="challengeText">...</p>
             
-            <div id="miniGameArea" style="display:none; position: relative; margin: 15px auto;">
-                <canvas id="miniGameCanvas" width="300" height="300" style="display:none; background: #000; margin: 0 auto; border: 2px solid #00ffcc;"></canvas>
-                
-                <div id="bugGameContainer" style="display:none; width: 300px; height: 300px; background: #111; margin: 0 auto; border: 2px solid #f87171; position: relative; overflow: hidden; cursor: crosshair;"></div>
-                
-                <div id="memoryGameContainer" style="display:none; width: 320px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 0 auto;"></div>
-                
-                <p id="miniGameStats" style="font-weight:bold; color:#00ffcc; margin-top:10px; display:none;"></p>
+            <div id="miniGameArea" class="mini-game-area" style="display:none;">
+                <canvas id="miniGameCanvas" width="300" height="300"></canvas>
+                <div id="bugGameContainer"></div>
+                <div id="memoryGameContainer"></div>
+                <p id="miniGameStats"></p>
             </div>
             
             <div id="answersContainer" class="answers"></div>
-            
-            <button id="retryBtn" class="answer-btn" style="display:none; background-color: #f87171; color: black; font-weight: bold;">❌ Eșec! Reîncearcă (-10 XP)</button>
+            <button id="retryBtn" class="answer-btn danger-action" style="display:none;">❌ Eșec! Reîncearcă (-10 XP)</button>
         </div>
     </div>
 
