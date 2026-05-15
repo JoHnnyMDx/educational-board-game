@@ -769,3 +769,14 @@ canvas {
 #lobbyScreen .big-btn {
   width: 100%;
 }
+
+.room-info-box {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(16,236,210,0.12);
+  border: 1px solid rgba(16,236,210,0.45);
+  color: var(--text);
+  font-weight: 800;
+  text-align: center;
+}
