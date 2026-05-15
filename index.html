@@ -197,16 +197,14 @@
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
-  <script src="script.js" defer></script>
-
-  
-<div id="lobbyScreen" class="start-overlay" style="display:none;">
+  <div id="lobbyScreen" class="start-overlay" style="display:none;">
   <div class="start-content" style="max-width:600px;">
     <h1>🌐 Lobby Multiplayer</h1>
-    <p class="start-subtitle">Creează o cameră sau conectează-te prin cod.</p>
+    <p class="start-subtitle">Creează o cameră sau conectează-te prin cod. Jucătorii sunt adăugați automat pe aceeași tablă.</p>
 
     <div style="display:grid; gap:16px; margin-top:20px;">
-      <button id="createRoomBtn" class="btn primary big-btn">🎮 Creează Cameră</button>
+      <button id="localGameBtn" class="btn full">🖥️ Joc local / Demo</button>
+      <button id="createRoomBtn" class="btn primary big-btn">🎮 Creează Cameră Multiplayer</button>
 
       <div class="box" style="text-align:left;">
         <h3>Conectare la cameră</h3>
@@ -215,10 +213,15 @@
         <button id="joinRoomBtn" class="btn full" style="margin-top:12px;">🔗 Intră în Cameră</button>
       </div>
 
-      <div id="lobbyStatus" class="hint"></div>
+      <div id="lobbyStatus" class="hint"></div><div id="roomInfoBox" class="room-info-box" style="display:none;"></div>
     </div>
   </div>
 </div>
+
+  <script src="script.js" defer></script>
+
+  
+
 
 </body>
 </html>
