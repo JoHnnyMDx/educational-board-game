@@ -196,6 +196,57 @@
   }
 
 
+
+  function makePlayer(index) {
+    const playerFaction = factions[index % factions.length];
+
+    return {
+      id: index + 1,
+      name: `Jucător ${index + 1}`,
+      color: playerColors[index % playerColors.length],
+      school: null,
+      controlledSchools: [],
+      expansionTokens: 0,
+      faction: playerFaction,
+      upgrades: [],
+      resources: { innovation: 2, equipment: 2, collaboration: 2, impact: 0 },
+      production: { innovation: 1, equipment: 1, collaboration: 1, impact: 0 },
+      online: true,
+      joinedAt: Date.now()
+    };
+  }
+
+  function getLocalPlayerIndex() {
+    return Math.max(0, localPlayerId - 1);
+  }
+
+  function getLocalPlayer() {
+    if (!state || !state.players) return null;
+    return state.players[getLocalPlayerIndex()] || state.players[0];
+  }
+
+  function setLocalStatusOnline() {
+    if (!isMultiplayer || !roomCode || !db) return;
+    db.ref("rooms/" + roomCode + "/presence/player" + localPlayerId).set(true);
+    db.ref("rooms/" + roomCode + "/presence/player" + localPlayerId).onDisconnect().set(false);
+  }
+
+  function normalizeDynamicPlayers() {
+    if (!state || !state.players) return;
+
+    state.players.forEach((p, index) => {
+      p.id = p.id || index + 1;
+      p.name = p.name || `Jucător ${index + 1}`;
+      p.color = p.color || playerColors[index % playerColors.length];
+      p.faction = p.faction || factions[index % factions.length];
+      p.upgrades = p.upgrades || [];
+      p.controlledSchools = p.controlledSchools || (p.school ? [p.school] : []);
+      p.expansionTokens = p.expansionTokens || 0;
+      p.resources = { innovation: 2, equipment: 2, collaboration: 2, impact: 0, ...(p.resources || {}) };
+      p.production = { innovation: 1, equipment: 1, collaboration: 1, impact: 0, ...(p.production || {}) };
+    });
+  }
+
   // --- FUNCȚII CLOUD ---
   function syncToCloud() {
     if (!isMultiplayer || !roomCode || !state || !db) return;
@@ -219,6 +270,7 @@
 
       if (rawState) {
         state = JSON.parse(rawState);
+        normalizeDynamicPlayers();
         renderAll();
 
         if (isMyTurn()) {
@@ -229,8 +281,7 @@
   }
 
   function isMyTurn() {
-    if (!isMultiplayer) return true;
-    return state.currentPlayer === (localPlayerId - 1);
+    return true;
   }
 
   function shuffle(array) {
@@ -333,26 +384,12 @@
   }
 
   function newGame() {
-    const count = Number(ui.playerCount.value || 4);
+    const count = isMultiplayer ? 1 : Number(ui.playerCount.value || 4);
 
     state = {
       map: createInitialMap(),
       discovered: Array.from({ length: GRID_SIZE }, () => Array.from({ length: GRID_SIZE }, () => false)),
-      players: Array.from({ length: count }, (_, index) => {
-        const playerFaction = factions[index % factions.length];
-        return {
-        id: index + 1,
-        name: `Jucător ${index + 1}`,
-        color: playerColors[index],
-        school: null,
-        controlledSchools: [],
-        expansionTokens: 0,
-        faction: playerFaction,
-        upgrades: [],
-        resources: { innovation: 2, equipment: 2, collaboration: 2, impact: 0 },
-        production: { innovation: 1, equipment: 1, collaboration: 1, impact: 0 }
-      };
-      }),
+      players: Array.from({ length: count }, (_, index) => makePlayer(index)),
       currentPlayer: 0,
       phase: "chooseSchool",
       selectedCell: null,
@@ -396,6 +433,9 @@
   }
 
   function currentPlayer() {
+    if (isMultiplayer) {
+      return getLocalPlayer();
+    }
     return state.players[state.currentPlayer];
   }
 
@@ -649,7 +689,7 @@
     const player = currentPlayer();
 
     if (state.phase === "chooseSchool") {
-      ui.turnInfo.innerHTML = `<strong>${player.name}</strong><br>Alege o școală liberă de pe hartă.`;
+      ui.turnInfo.innerHTML = `<strong>${player.name}</strong><br>Alege o școală liberă de pe hartă. Jucătorii conectați sunt adăugați automat.`;
       ui.drawTileBtn.disabled = true;
       ui.drawActionBtn.disabled = true;
       ui.drawCharacterBtn.disabled = true;
@@ -886,6 +926,15 @@
     player.resources.impact += 1;
     revealArea(cell.x, cell.y, 1);
 
+    if (isMultiplayer) {
+      state.phase = "play";
+      resetTurnFlags();
+      produceAtTurnStart(player);
+      setStatus(`${player.name} a ales școala. Poate începe construcția.`);
+      renderAll();
+      return;
+    }
+
     if (state.players.every(p => p.school)) {
       state.phase = "play";
       state.currentPlayer = 0;
@@ -921,6 +970,17 @@
     }
 
     resetTurnFlags();
+
+    if (isMultiplayer) {
+      const bonus = produceAtTurnStart(currentPlayer());
+      expireGlobalEventIfNeeded();
+      checkMissions();
+      checkWinCondition();
+      setStatus(`${currentPlayer().name} a finalizat acțiunile. Producție primită. Bonus regional: ${formatCost(bonus)}.`);
+      renderAll();
+      return;
+    }
+
     advancePlayer();
 
     if (state.currentPlayer === 0) {
@@ -1690,7 +1750,7 @@
       <div class="faction-info-name">${escapeHtml(p.faction.name)}</div>
       <div class="faction-info-power">${escapeHtml(p.faction.power)}</div>
       <div>${escapeHtml(p.faction.desc)}</div>
-      <div class="badge">Jucător curent: ${escapeHtml(p.name)}</div>
+      <div class="badge">Jucător local: ${escapeHtml(p.name)}</div>${isMultiplayer ? `<div class="badge">Camera: ${escapeHtml(roomCode)}</div>` : ""}
     `;
   }
 
@@ -2019,19 +2079,34 @@
     if (multiplayerStartBtn) {
       multiplayerStartBtn.addEventListener("click", () => {
         const startScreen = document.getElementById("startScreen");
-        if (!startScreen) return;
+        const lobbyScreen = document.getElementById("lobbyScreen");
 
-        startScreen.style.transition = "opacity 0.5s ease";
-        startScreen.style.opacity = "0";
+        if (startScreen) {
+          startScreen.style.transition = "opacity 0.35s ease";
+          startScreen.style.opacity = "0";
+        }
 
         setTimeout(() => {
-          startScreen.style.display = "none";
-          triggerConfetti("normal");
-        }, 500);
+          if (startScreen) startScreen.style.display = "none";
+          if (lobbyScreen) lobbyScreen.style.display = "flex";
+        }, 350);
       });
     }
 
 
+
+    const localGameBtn = document.getElementById("localGameBtn");
+    if (localGameBtn) {
+      localGameBtn.addEventListener("click", () => {
+        isMultiplayer = false;
+        roomCode = null;
+        localPlayerId = 1;
+        const lobbyScreen = document.getElementById("lobbyScreen");
+        if (lobbyScreen) lobbyScreen.style.display = "none";
+        newGame();
+        triggerConfetti("normal");
+      });
+    }
 
     const createRoomBtn = document.getElementById("createRoomBtn");
     if (createRoomBtn) {
@@ -2049,10 +2124,12 @@
           db.ref("rooms/" + roomCode + "/joinedPlayers").set(1);
         }
 
+        setLocalStatusOnline();
         syncToCloud();
         listenToCloud();
 
-        alert("Camera creată! Codul este: " + roomCode);
+        setStatus("Camera online: " + roomCode + ". Trimite codul colegilor.");
+        alert("Camera creată! Codul este: " + roomCode + "\\nTrimite acest cod colegilor. Ei vor fi adăugați automat ca jucători noi.");
       });
     }
 
@@ -2086,17 +2163,23 @@
           isMultiplayer = true;
 
           const data = snapshot.val();
+          const nextId = (data.joinedPlayers || 1) + 1;
+          localPlayerId = nextId;
 
-          localPlayerId = (data.joinedPlayers || 1) + 1;
+          const parsedState = JSON.parse(data.state);
+          parsedState.players = parsedState.players || [];
+          parsedState.players.push(makePlayer(nextId - 1));
 
-          db.ref("rooms/" + roomCode + "/joinedPlayers")
-            .set(localPlayerId);
-
-          document.getElementById("lobbyScreen").style.display = "none";
-
-          listenToCloud();
-
-          alert("Te-ai conectat! Ești Jucătorul " + localPlayerId);
+          db.ref("rooms/" + roomCode + "/joinedPlayers").set(nextId);
+          db.ref("rooms/" + roomCode + "/state").set(JSON.stringify(parsedState)).then(() => {
+            state = parsedState;
+            normalizeDynamicPlayers();
+            document.getElementById("lobbyScreen").style.display = "none";
+            setLocalStatusOnline();
+            listenToCloud();
+            renderAll();
+            alert("Te-ai conectat! Ești Jucătorul " + localPlayerId + ". Alege o școală liberă pe tablă.");
+          });
         });
       });
     }
