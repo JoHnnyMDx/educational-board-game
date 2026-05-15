@@ -25,6 +25,7 @@
   let localPlayerId = 1;
   let isMultiplayer = false;
   let ignoreNextSync = false;
+  let remoteRenderMode = false;
 
 
 
@@ -249,12 +250,24 @@
 
   // --- FUNCȚII CLOUD ---
   function syncToCloud() {
+    if (remoteRenderMode) return;
     if (!isMultiplayer || !roomCode || !state || !db) return;
 
     ignoreNextSync = true;
 
     db.ref("rooms/" + roomCode + "/state")
       .set(JSON.stringify(state));
+  }
+
+
+  function syncGameState(reason = "update") {
+    if (!isMultiplayer || !roomCode || !state || !db || remoteRenderMode) return;
+
+    state.lastSyncReason = reason;
+    state.lastSyncAt = Date.now();
+    state.lastSyncBy = localPlayerId;
+
+    syncToCloud();
   }
 
   function listenToCloud() {
@@ -271,7 +284,9 @@
       if (rawState) {
         state = JSON.parse(rawState);
         normalizeDynamicPlayers();
+        remoteRenderMode = true;
         renderAll();
+        remoteRenderMode = false;
 
         if (isMyTurn()) {
           setStatus("🎯 Este rândul tău!");
@@ -281,7 +296,9 @@
   }
 
   function isMyTurn() {
-    return true;
+    if (!isMultiplayer) return true;
+    if (!state || !state.players) return false;
+    return state.currentPlayer === (localPlayerId - 1);
   }
 
   function shuffle(array) {
@@ -433,10 +450,13 @@
   }
 
   function currentPlayer() {
-    if (isMultiplayer) {
-      return getLocalPlayer();
-    }
-    return state.players[state.currentPlayer];
+    if (!state || !state.players || !state.players.length) return null;
+    return state.players[state.currentPlayer] || state.players[0];
+  }
+
+  function localPlayer() {
+    if (!state || !state.players || !state.players.length) return null;
+    return state.players[getLocalPlayerIndex()] || state.players[0];
   }
 
   function setStatus(text) {
@@ -571,8 +591,8 @@
               ev.apply(currentPlayer());
 
               setTimeout(() => {
-                spawnFloatingText(`+${mission.reward} ⭐`, "#FFD166", window.innerWidth / 2, 120);
-          showCard({ category: "Descoperire în Ceață", icon: ev.icon, title: ev.title, text: ev.text });
+                spawnFloatingText(ev.type === "reward" ? "Descoperire!" : "Atenție!", ev.type === "reward" ? "#FFD166" : "#E51491", window.innerWidth / 2, 120);
+                showCard({ category: "Descoperire în Ceață", icon: ev.icon, title: ev.title, text: ev.text });
                 setStatus(`${currentPlayer().name} a explorat și a găsit: ${ev.title}`);
                 renderAll();
               }, 500);
@@ -687,21 +707,27 @@
 
     ui.endTurnBtn.disabled = false;
     const player = currentPlayer();
+    const local = isMultiplayer ? localPlayer() : player;
+    const turnSuffix = isMultiplayer
+      ? (isMyTurn() ? "Este rândul tău." : `Așteaptă: este rândul lui ${player?.name || "alt jucător"}. Tu ești ${local?.name || "jucător local"}.`)
+      : "";
 
     if (state.phase === "chooseSchool") {
-      ui.turnInfo.innerHTML = `<strong>${player.name}</strong><br>Alege o școală liberă de pe hartă. Jucătorii conectați sunt adăugați automat.`;
+      ui.turnInfo.innerHTML = `<strong>${player.name}</strong><br>Alege o școală liberă de pe hartă.<br>${turnSuffix}`;
       ui.drawTileBtn.disabled = true;
       ui.drawActionBtn.disabled = true;
       ui.drawCharacterBtn.disabled = true;
       ui.drawEventBtn.disabled = true;
+      ui.endTurnBtn.disabled = !isMyTurn();
       return;
     }
 
-    ui.turnInfo.innerHTML = `<strong>${player.name}</strong><br>Runda ${state.round}. 1 tile + max. 1 acțiune + max. 1 personaj.`;
-    ui.drawTileBtn.disabled = state.tileDrawnThisTurn || Boolean(state.currentTile) || Boolean(state.draftingTiles?.length);
-    ui.drawActionBtn.disabled = state.actionDrawnThisTurn || Boolean(state.pendingAction);
-    ui.drawCharacterBtn.disabled = state.characterDrawnThisTurn || Boolean(state.pendingCharacter);
-    ui.drawEventBtn.disabled = state.eventDrawnThisRound;
+    ui.turnInfo.innerHTML = `<strong>${player.name}</strong><br>Runda ${state.round}. 1 tile + max. 1 acțiune + max. 1 personaj.<br>${turnSuffix}`;
+    ui.drawTileBtn.disabled = !isMyTurn() || state.tileDrawnThisTurn || Boolean(state.currentTile) || Boolean(state.draftingTiles?.length);
+    ui.drawActionBtn.disabled = !isMyTurn() || state.actionDrawnThisTurn || Boolean(state.pendingAction);
+    ui.drawCharacterBtn.disabled = !isMyTurn() || state.characterDrawnThisTurn || Boolean(state.pendingCharacter);
+    ui.drawEventBtn.disabled = !isMyTurn() || state.eventDrawnThisRound;
+    ui.endTurnBtn.disabled = !isMyTurn();
   }
 
   function updateTooltip(event) {
@@ -829,6 +855,7 @@
       spawnFloatingText("Upgrade Construit!", "#10ECD2", window.innerWidth / 2, window.innerHeight / 2);
 
       if (ui.upgradeModal) ui.upgradeModal.style.display = "none";
+      syncGameState("buy-upgrade");
       renderAll();
     } else {
       alert("Resurse insuficiente!");
@@ -927,10 +954,17 @@
     revealArea(cell.x, cell.y, 1);
 
     if (isMultiplayer) {
-      state.phase = "play";
-      resetTurnFlags();
-      produceAtTurnStart(player);
-      setStatus(`${player.name} a ales școala. Poate începe construcția.`);
+      if (state.players.every(p => p.school)) {
+        state.phase = "play";
+        state.currentPlayer = 0;
+        resetTurnFlags();
+        produceAtTurnStart(currentPlayer());
+        setStatus(`Toți jucătorii conectați au ales școala. Începe jocul. Este rândul lui ${currentPlayer().name}.`);
+      } else {
+        advancePlayer();
+        setStatus(`${player.name} a ales școala. Urmează ${currentPlayer().name}.`);
+      }
+      syncGameState("choose-school");
       renderAll();
       return;
     }
@@ -946,6 +980,7 @@
 
     advancePlayer();
     setStatus(`${player.name} a ales școala. Urmează ${currentPlayer().name}.`);
+    syncGameState("choose-school");
   }
 
   function resetTurnFlags() {
@@ -972,11 +1007,29 @@
     resetTurnFlags();
 
     if (isMultiplayer) {
-      const bonus = produceAtTurnStart(currentPlayer());
-      expireGlobalEventIfNeeded();
-      checkMissions();
-      checkWinCondition();
-      setStatus(`${currentPlayer().name} a finalizat acțiunile. Producție primită. Bonus regional: ${formatCost(bonus)}.`);
+      const previousIndex = state.currentPlayer;
+      advancePlayer();
+
+      if (state.currentPlayer <= previousIndex) {
+        state.round += 1;
+        state.eventDrawnThisRound = false;
+      }
+
+      const next = currentPlayer();
+
+      if (next && !next.school) {
+        state.phase = "chooseSchool";
+        setStatus(`Urmează ${next.name}. Trebuie să își aleagă școala de bază.`);
+      } else {
+        state.phase = "play";
+        const bonus = produceAtTurnStart(next);
+        expireGlobalEventIfNeeded();
+        checkMissions();
+        checkWinCondition();
+        setStatus(`Urmează ${next.name}. Producție primită. Bonus regional: ${formatCost(bonus)}.`);
+      }
+
+      syncGameState("end-turn-multiplayer");
       renderAll();
       return;
     }
@@ -996,8 +1049,21 @@
     renderAll();
   }
 
+  function nextPlayerIndex(fromIndex = state.currentPlayer) {
+    if (!state || !state.players || state.players.length === 0) return 0;
+
+    for (let step = 1; step <= state.players.length; step++) {
+      const idx = (fromIndex + step) % state.players.length;
+      const candidate = state.players[idx];
+
+      if (candidate) return idx;
+    }
+
+    return 0;
+  }
+
   function advancePlayer() {
-    state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
+    state.currentPlayer = nextPlayerIndex(state.currentPlayer);
   }
 
   function drawTileCard() {
@@ -1076,6 +1142,7 @@
     });
 
     setStatus(`${currentPlayer().name} a ales ${def.label}. Click pe hartă pentru plasare.`);
+    syncGameState("select-draft-tile");
     renderAll();
   }
 
@@ -1123,6 +1190,7 @@
       setStatus(`Eveniment global activ: ${card.title}.`);
     }
 
+    syncGameState("draw-card");
     renderAll();
   }
 
@@ -1350,6 +1418,7 @@
 
     state.currentTile = null;
     setStatus(`${player.name} a construit ${def.label}.`);
+    syncGameState("place-tile");
   }
 
   function applyPlacementCombo(cell, tile, player) {
@@ -1580,6 +1649,7 @@
           <div>💡 ${p.resources.innovation} · 🧰 ${p.resources.equipment} · 🤝 ${p.resources.collaboration} · ⭐ ${p.resources.impact}</div>
           <div class="production-line">Producție/tură: 💡${p.production.innovation} · 🧰${p.production.equipment} · 🤝${p.production.collaboration} · ⭐${p.production.impact}</div>
           ${index === state.currentPlayer ? '<span class="badge">Tura curentă</span>' : ""}
+          ${isMultiplayer && index === getLocalPlayerIndex() ? '<span class="badge">Tu</span>' : ""}
         </div>
       `;
     }).join("");
@@ -1717,6 +1787,7 @@
     setStatus(`Schimb realizat. Ai primit 1 ${ui.bankGet.options[ui.bankGet.selectedIndex].text}.`);
 
     checkMissions();
+    syncGameState("bank-trade");
     renderAll();
   }
 
@@ -1740,17 +1811,21 @@
 
   function renderFactionInfo() {
     if (!ui.factionInfoBox || !state) return;
-    const p = currentPlayer();
-    if (!p || !p.faction) {
+    const local = isMultiplayer ? localPlayer() : currentPlayer();
+    const turn = currentPlayer();
+
+    if (!local || !local.faction) {
       ui.factionInfoBox.textContent = "—";
       return;
     }
 
     ui.factionInfoBox.innerHTML = `
-      <div class="faction-info-name">${escapeHtml(p.faction.name)}</div>
-      <div class="faction-info-power">${escapeHtml(p.faction.power)}</div>
-      <div>${escapeHtml(p.faction.desc)}</div>
-      <div class="badge">Jucător local: ${escapeHtml(p.name)}</div>${isMultiplayer ? `<div class="badge">Camera: ${escapeHtml(roomCode)}</div>` : ""}
+      <div class="faction-info-name">${escapeHtml(local.faction.name)}</div>
+      <div class="faction-info-power">${escapeHtml(local.faction.power)}</div>
+      <div>${escapeHtml(local.faction.desc)}</div>
+      <div class="badge">Tu: ${escapeHtml(local.name)}</div>
+      <div class="badge">Tura: ${escapeHtml(turn?.name || "—")}</div>
+      ${isMultiplayer ? `<div class="badge">Camera: ${escapeHtml(roomCode)}</div>` : ""}
     `;
   }
 
@@ -1765,9 +1840,6 @@
     renderCurrentCard();
     renderTileInfo();
     if (typeof renderMissions === "function") renderMissions();
-
-    if (isMyTurn()) syncToCloud();
-    renderMissions();
   }
 
   function updateCanvasSize() {
@@ -2169,6 +2241,11 @@
           const parsedState = JSON.parse(data.state);
           parsedState.players = parsedState.players || [];
           parsedState.players.push(makePlayer(nextId - 1));
+
+          if (parsedState.phase === "chooseSchool") {
+            const waitingIndex = parsedState.players.findIndex(p => !p.school);
+            if (waitingIndex >= 0) parsedState.currentPlayer = waitingIndex;
+          }
 
           db.ref("rooms/" + roomCode + "/joinedPlayers").set(nextId);
           db.ref("rooms/" + roomCode + "/state").set(JSON.stringify(parsedState)).then(() => {
