@@ -23,3 +23,12 @@
 ## Notă tehnică multiplayer
 
 Sincronizarea se face după acțiuni importante: alegerea școlii, plasarea tile-ului, finalizarea turei, upgrade, bancă și extragere card. Nu se sincronizează la fiecare randare, pentru a evita bucle Firebase.
+
+## Debug turn fix
+Versiunea aceasta folosește `clientId` persistent în browser pentru a lega corect fiecare participant de jucătorul său. Tura este validată după `clientId`, nu doar după `localPlayerId`.
+
+## Debug important pentru testare în browser
+
+Dacă testezi multiplayer-ul în două tab-uri ale aceluiași browser, fiecare tab trebuie să aibă clientId separat.
+Această versiune folosește `sessionStorage`, deci fiecare tab/fereastră primește ID diferit.
+Dacă ai testat o versiune veche, închide tab-urile vechi și deschide două tab-uri noi sau folosește Incognito pentru al doilea jucător.

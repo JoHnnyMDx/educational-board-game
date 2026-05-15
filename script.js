@@ -25,6 +25,12 @@
   let localPlayerId = 1;
   let isMultiplayer = false;
   let ignoreNextSync = false;
+  // IMPORTANT:
+  // Folosim sessionStorage, nu localStorage.
+  // localStorage este comun între tab-uri, iar la testare în același browser
+  // două tab-uri ar primi același clientId și ar părea același jucător.
+  let clientId = sessionStorage.getItem("cv_client_id") || ("client_" + Math.random().toString(36).slice(2) + Date.now());
+  sessionStorage.setItem("cv_client_id", clientId);
   let remoteRenderMode = false;
 
 
@@ -198,7 +204,14 @@
 
 
 
-  function makePlayer(index) {
+  function resetSessionClientId() {
+    sessionStorage.removeItem("cv_client_id");
+    clientId = "client_" + Math.random().toString(36).slice(2) + Date.now();
+    sessionStorage.setItem("cv_client_id", clientId);
+    localPlayerId = 1;
+  }
+
+  function makePlayer(index, ownerClientId = null) {
     const playerFaction = factions[index % factions.length];
 
     return {
@@ -213,17 +226,26 @@
       resources: { innovation: 2, equipment: 2, collaboration: 2, impact: 0 },
       production: { innovation: 1, equipment: 1, collaboration: 1, impact: 0 },
       online: true,
-      joinedAt: Date.now()
+      joinedAt: Date.now(),
+      clientId: ownerClientId || null
     };
   }
 
+  function getLocalPlayerByClientId() {
+    if (!state || !state.players) return null;
+    return state.players.find(p => p.clientId === clientId) || null;
+  }
+
   function getLocalPlayerIndex() {
+    if (!state || !state.players) return Math.max(0, localPlayerId - 1);
+    const byClient = state.players.findIndex(p => p.clientId === clientId);
+    if (byClient >= 0) return byClient;
     return Math.max(0, localPlayerId - 1);
   }
 
   function getLocalPlayer() {
     if (!state || !state.players) return null;
-    return state.players[getLocalPlayerIndex()] || state.players[0];
+    return getLocalPlayerByClientId() || state.players[getLocalPlayerIndex()] || state.players[0];
   }
 
   function setLocalStatusOnline() {
@@ -240,6 +262,7 @@
       p.name = p.name || `Jucător ${index + 1}`;
       p.color = p.color || playerColors[index % playerColors.length];
       p.faction = p.faction || factions[index % factions.length];
+      p.clientId = p.clientId || null;
       p.upgrades = p.upgrades || [];
       p.controlledSchools = p.controlledSchools || (p.school ? [p.school] : []);
       p.expansionTokens = p.expansionTokens || 0;
@@ -284,6 +307,8 @@
       if (rawState) {
         state = JSON.parse(rawState);
         normalizeDynamicPlayers();
+        const localIdx = state.players.findIndex(p => p.clientId === clientId);
+        if (localIdx >= 0) localPlayerId = localIdx + 1;
         remoteRenderMode = true;
         renderAll();
         remoteRenderMode = false;
@@ -298,6 +323,16 @@
   function isMyTurn() {
     if (!isMultiplayer) return true;
     if (!state || !state.players) return false;
+
+    const active = state.players[state.currentPlayer];
+    if (!active) return false;
+
+    const local = getLocalPlayerByClientId();
+
+    if (local && active.clientId && local.clientId && active.clientId === local.clientId) {
+      return true;
+    }
+
     return state.currentPlayer === (localPlayerId - 1);
   }
 
@@ -406,7 +441,7 @@
     state = {
       map: createInitialMap(),
       discovered: Array.from({ length: GRID_SIZE }, () => Array.from({ length: GRID_SIZE }, () => false)),
-      players: Array.from({ length: count }, (_, index) => makePlayer(index)),
+      players: Array.from({ length: count }, (_, index) => makePlayer(index, isMultiplayer && index === 0 ? clientId : null)),
       currentPlayer: 0,
       phase: "chooseSchool",
       selectedCell: null,
@@ -456,7 +491,7 @@
 
   function localPlayer() {
     if (!state || !state.players || !state.players.length) return null;
-    return state.players[getLocalPlayerIndex()] || state.players[0];
+    return getLocalPlayerByClientId() || state.players[getLocalPlayerIndex()] || state.players[0];
   }
 
   function setStatus(text) {
@@ -1056,7 +1091,10 @@
       const idx = (fromIndex + step) % state.players.length;
       const candidate = state.players[idx];
 
-      if (candidate) return idx;
+      if (!candidate) continue;
+      if (isMultiplayer && !candidate.clientId) continue;
+
+      return idx;
     }
 
     return 0;
@@ -1649,7 +1687,8 @@
           <div>💡 ${p.resources.innovation} · 🧰 ${p.resources.equipment} · 🤝 ${p.resources.collaboration} · ⭐ ${p.resources.impact}</div>
           <div class="production-line">Producție/tură: 💡${p.production.innovation} · 🧰${p.production.equipment} · 🤝${p.production.collaboration} · ⭐${p.production.impact}</div>
           ${index === state.currentPlayer ? '<span class="badge">Tura curentă</span>' : ""}
-          ${isMultiplayer && index === getLocalPlayerIndex() ? '<span class="badge">Tu</span>' : ""}
+          ${isMultiplayer && p.clientId === clientId ? '<span class="badge">Tu</span>' : ""}
+          ${isMultiplayer && p.clientId ? '<span class="badge">Online</span>' : ""}
         </div>
       `;
     }).join("");
@@ -1824,7 +1863,7 @@
       <div class="faction-info-power">${escapeHtml(local.faction.power)}</div>
       <div>${escapeHtml(local.faction.desc)}</div>
       <div class="badge">Tu: ${escapeHtml(local.name)}</div>
-      <div class="badge">Tura: ${escapeHtml(turn?.name || "—")}</div>
+      <div class="badge">Tura: ${escapeHtml(turn?.name || "—")}</div><div class="badge">ID local: ${localPlayerId}</div><div class="badge">Client: ${escapeHtml(clientId.slice(-6))}</div><div class="badge">Activ index: ${state.currentPlayer + 1}</div>
       ${isMultiplayer ? `<div class="badge">Camera: ${escapeHtml(roomCode)}</div>` : ""}
     `;
   }
@@ -2194,13 +2233,14 @@
 
         if (db) {
           db.ref("rooms/" + roomCode + "/joinedPlayers").set(1);
+          db.ref("rooms/" + roomCode + "/clients/" + clientId).set(1);
         }
 
         setLocalStatusOnline();
         syncToCloud();
         listenToCloud();
 
-        setStatus("Camera online: " + roomCode + ". Trimite codul colegilor.");
+        setStatus("Camera online: " + roomCode + ". Tu ești Jucătorul 1. Client: " + clientId.slice(-6));
         alert("Camera creată! Codul este: " + roomCode + "\\nTrimite acest cod colegilor. Ei vor fi adăugați automat ca jucători noi.");
       });
     }
@@ -2240,14 +2280,23 @@
 
           const parsedState = JSON.parse(data.state);
           parsedState.players = parsedState.players || [];
-          parsedState.players.push(makePlayer(nextId - 1));
+
+          const existingIndex = parsedState.players.findIndex(p => p.clientId === clientId);
+
+          if (existingIndex >= 0) {
+            localPlayerId = existingIndex + 1;
+          } else {
+            parsedState.players.push(makePlayer(nextId - 1, clientId));
+            localPlayerId = nextId;
+          }
 
           if (parsedState.phase === "chooseSchool") {
             const waitingIndex = parsedState.players.findIndex(p => !p.school);
             if (waitingIndex >= 0) parsedState.currentPlayer = waitingIndex;
           }
 
-          db.ref("rooms/" + roomCode + "/joinedPlayers").set(nextId);
+          db.ref("rooms/" + roomCode + "/joinedPlayers").set(parsedState.players.length);
+          db.ref("rooms/" + roomCode + "/clients/" + clientId).set(localPlayerId);
           db.ref("rooms/" + roomCode + "/state").set(JSON.stringify(parsedState)).then(() => {
             state = parsedState;
             normalizeDynamicPlayers();
@@ -2255,6 +2304,7 @@
             setLocalStatusOnline();
             listenToCloud();
             renderAll();
+            setStatus("Conectat în camera " + roomCode + ". Tu ești Jucătorul " + localPlayerId + ". Client: " + clientId.slice(-6));
             alert("Te-ai conectat! Ești Jucătorul " + localPlayerId + ". Alege o școală liberă pe tablă.");
           });
         });
