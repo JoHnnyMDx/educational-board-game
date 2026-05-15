@@ -1,1418 +1,2274 @@
-// ==========================================
-// DIGITAL HEIST ACADEMY - LIVE ARENA V4
-// Clase de jucători + Skill Tree + Evenimente globale + Boss pe hartă
-// ==========================================
+(() => {
+  "use strict";
 
-// ==========================================
-// 1. CONFIGURARE FIREBASE
-// ==========================================
-const firebaseConfig = {
-  apiKey: "AIzaSyCsaDykKgbVUYyO7o1NjGRoD-TMrXo79SE",
-  authDomain: "neocity-game.firebaseapp.com",
-  databaseURL: "https://neocity-game-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "neocity-game",
-  storageBucket: "neocity-game.firebasestorage.app",
-  messagingSenderId: "932738671560",
-  appId: "1:932738671560:web:2e3da125d4ac7d20e616fd"
-};
+  // --- FIREBASE MULTIPLAYER ---
+  const firebaseConfig = {
+    apiKey: "AIzaSyCsaDykKgbVUYyO7o1NjGRoD-TMrXo79SE",
+    authDomain: "neocity-game.firebaseapp.com",
+    databaseURL: "https://neocity-game-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "neocity-game",
+    storageBucket: "neocity-game.firebasestorage.app",
+    messagingSenderId: "932738671560",
+    appId: "1:932738671560:web:2e3da125d4ac7d20e616fd",
+    measurementId: "G-L2SRJCDVH1"
+  };
 
-firebase.initializeApp(firebaseConfig);
-const db = firebase.database();
-const playersRef = db.ref("players");
-const gameStateRef = db.ref("gameState");
-const coopGateRef = db.ref("gameState/coopGate");
+  if (typeof firebase !== "undefined" && !firebase.apps.length) {
+    firebase.initializeApp(firebaseConfig);
+  }
 
-// ==========================================
-// 2. CONFIGURARE JOC
-// ==========================================
-const boardSize = 40;
-const gameDurationMs = 30 * 60 * 1000;
-const minFastWinMs = 20 * 60 * 1000;
-const winningScore = 1200;
-const bossMaxHP = 300;
-const coopGatePosition = boardSize - 1;
-const globalEventIntervalMs = 3 * 60 * 1000;
-const globalEventDurationMs = 70 * 1000;
-const bossMoveIntervalMs = 20 * 1000;
+  const db = typeof firebase !== "undefined"
+    ? firebase.database()
+    : null;
 
-let myPlayerId = "";
-let localPlayer = {
-    name: "",
-    position: 0,
-    score: 100,
-    winner: false,
-    bossKeys: 0,
-    playerClass: "hacker",
-    skills: {},
-    lastSkillLevel: 1,
-    appliedEvents: {}
-};
+  let roomCode = null;
+  let localPlayerId = 1;
+  let isMultiplayer = false;
+  let ignoreNextSync = false;
 
-let allNetworkPlayers = {};
-let currentActiveMinigame = "";
-let localTileMap = {};
-let gameLocked = false;
-let gameFinished = false;
-let wrongAnswerStreak = 0;
-let waitingAtCoopGate = false;
-let activeQuestionType = "question";
-let gameState = {};
-let gameTimerInterval = null;
-let targetNoticeShown = false;
-let coopMissionLocalOpen = false;
-let lastCoopMissionIdHandled = "";
-let skillChoiceOpen = false;
-let lastBossCatchAt = 0;
 
-const playerClasses = {
-    hacker: {
-        icon: "💻",
-        label: "Hacker",
-        description: "+20% XP la attack, dar pierde mai mult la quiz greșit."
-    },
-    defender: {
-        icon: "🛡️",
-        label: "Defender",
-        description: "Pierde jumătate XP la greșeli și primește bonus la boss."
-    },
-    analyst: {
-        icon: "🔍",
-        label: "Analyst",
-        description: "Primește hint la întrebări și vede mai ușor variante greșite."
-    },
-    speedrunner: {
-        icon: "⚡",
-        label: "Speedrunner",
-        description: "Aruncă 2 zaruri și păstrează rezultatul mai mare."
-    }
-};
 
-const skillTree = [
-    { id: "shield", icon: "🛡️", name: "Scut Digital", description: "Reduce fiecare penalizare cu 10 XP." },
-    { id: "dataLeech", icon: "🧲", name: "Data Leech", description: "+10 XP la fiecare atac reușit." },
-    { id: "deepScan", icon: "🔎", name: "Deep Scan", description: "Primești hint și dacă nu ești Analyst." },
-    { id: "bossSlayer", icon: "⚔️", name: "Boss Slayer", description: "+15 damage în luptele cu Boss-ul." },
-    { id: "backupProtocol", icon: "💾", name: "Backup Protocol", description: "+15 XP extra la evenimentul Backup Restored." }
-];
+  const GRID_SIZE = 30;
+  const TILE_SIZE = 42;
 
-const globalEvents = [
-    { type: "solar", icon: "🌩", title: "Solar Storm", description: "Zonele de attack sunt dezactivate temporar." },
-    { type: "virus", icon: "🦠", title: "Virus Outbreak", description: "Greșelile costă dublu XP." },
-    { type: "backup", icon: "💾", title: "Backup Restored", description: "Toți agenții primesc +30 XP." },
-    { type: "firewall", icon: "🔥", title: "Firewall Collapse", description: "Boss-ul apare pe hartă și se mișcă mai agresiv." }
-];
+  const canvas = document.getElementById("gameCanvas");
+  const ctx = canvas.getContext("2d");
 
-const tileMeta = {
-    question: { icon: "❓", label: "Quiz", className: "tile-question" },
-    trivia: { icon: "💡", label: "Trivia", className: "tile-trivia" },
-    minigame: { icon: "🕹️", label: "Mini", className: "tile-minigame" },
-    attack: { icon: "⚔️", label: "Atac", className: "tile-attack" },
-    boost: { icon: "🟢", label: "Boost", className: "tile-boost" },
-    boss: { icon: "👾", label: "Boss", className: "tile-boss" },
-    voice: { icon: "🎙️", label: "Voice", className: "tile-voice" },
-    coop: { icon: "🔐🤝", label: "Co-Op Gate", className: "tile-coop" },
-    empty: { icon: "", label: "Safe", className: "tile-empty" }
-};
+  const ui = {
+    playerCount: document.getElementById("playerCount"),
+    newGameBtn: document.getElementById("newGameBtn"),
+    drawTileBtn: document.getElementById("drawTileBtn"),
+    drawActionBtn: document.getElementById("drawActionBtn"),
+    drawCharacterBtn: document.getElementById("drawCharacterBtn"),
+    drawEventBtn: document.getElementById("drawEventBtn"),
+    endTurnBtn: document.getElementById("endTurnBtn"),
+    currentCard: document.getElementById("currentCard"),
+    cardLog: document.getElementById("cardLog"),
+    turnInfo: document.getElementById("turnInfo"),
+    statusText: document.getElementById("statusText"),
+    playersBox: document.getElementById("playersBox"),
+    scoreBox: document.getElementById("scoreBox"),
+    globalEventBox: document.getElementById("globalEventBox"),
+    tileInfo: document.getElementById("tileInfo"),
+    saveBtn: document.getElementById("saveBtn"),
+    loadBtn: document.getElementById("loadBtn"),
+    resetBtn: document.getElementById("resetBtn"),
+    zoomInBtn: document.getElementById("zoomInBtn"),
+    zoomOutBtn: document.getElementById("zoomOutBtn"),
+    centerBtn: document.getElementById("centerBtn"),
+    draftZone: document.getElementById("draftZone"),
+    draftOptions: document.getElementById("draftOptions"),
+    mapTooltip: document.getElementById("mapTooltip"),
+    openBankBtn: document.getElementById("openBankBtn"),
+    openUpgradeBtn: document.getElementById("openUpgradeBtn"),
+    bankZone: document.getElementById("bankZone"),
+    bankGet: document.getElementById("bankGet"),
+    execBankBtn: document.getElementById("execBankBtn"),
+    missionsBox: document.getElementById("missionsBox"),
+    factionInfoBox: document.getElementById("factionInfoBox"),
+    upgradeModal: document.getElementById("upgradeModal"),
+    closeUpgradeModal: document.getElementById("closeUpgradeModal"),
+    upgradeList: document.getElementById("upgradeList"),
+    endGameModal: document.getElementById("endGameModal"),
+    winnerPodium: document.getElementById("winnerPodium"),
+    finalStats: document.getElementById("finalStats")
+  };
 
-function clampScore(value) { return Math.max(0, Number(value) || 0); }
-function randomBetween(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
-function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-function getLevel(score) {
-    score = clampScore(score);
-    if (score >= 1000) return 4;
-    if (score >= 650) return 3;
-    if (score >= 300) return 2;
-    return 1;
-}
-function getMissionPhase(score) {
-    const level = getLevel(score);
-    return {
-        1: "Nivel 1: Recrut",
-        2: "Nivel 2: Infiltrare",
-        3: "Nivel 3: Asalt AI",
-        4: "Nivel 4: Finalist"
-    }[level];
-}
-function formatTime(ms) {
-    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
-    const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
-    const seconds = (totalSeconds % 60).toString().padStart(2, "0");
-    return `${minutes}:${seconds}`;
-}
-function getElapsedMs() {
-    if (!gameState.startedAt) return 0;
-    return Math.max(0, Date.now() - Number(gameState.startedAt));
-}
-function canFastWin() { return getElapsedMs() >= minFastWinMs; }
-function cleanName(name) { return name.replace(/[<>]/g, "").slice(0, 24).trim(); }
-function getCurrentGlobalEvent() {
-    if (!gameState.globalEvent || !gameState.globalEvent.startedAt) return null;
-    const age = Date.now() - Number(gameState.globalEvent.startedAt);
-    return age <= Number(gameState.globalEvent.durationMs || globalEventDurationMs) ? gameState.globalEvent : null;
-}
-function getPlayerClassMeta() { return playerClasses[localPlayer.playerClass] || playerClasses.hacker; }
-function hasSkill(id) { return !!(localPlayer.skills && localPlayer.skills[id]); }
-function getAvailableSkills() { return skillTree.filter(s => !hasSkill(s.id)); }
 
-function setGameLocked(value) {
-    gameLocked = value;
-    const rollBtn = document.getElementById('rollDiceBtn');
-    if (rollBtn) rollBtn.disabled = value || gameFinished;
-}
+  const factions = [
+    { id: "ong", name: "ONG-ul Edu", power: "Colaborare Extra", desc: "Activitățile costă cu 1 🤝 mai puțin.", bonusType: "discount_collab" },
+    { id: "gov", name: "Ministerul Inovației", power: "Buget Tehnologic", desc: "Hub-urile și Centrele STEAM costă cu 1 🧰 mai puțin.", bonusType: "discount_tech" },
+    { id: "students", name: "Consiliul Elevilor", power: "Vocea Tinerilor", desc: "Elevii oferă +2 ⭐ Impact.", bonusType: "student_boost" },
+    { id: "biz", name: "Antreprenorii", power: "Investiții Rapide", desc: "Schimbul la bancă este 2:1.", bonusType: "bank_2_1" }
+  ];
 
-function playTone(type = "click") {
-    try {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        const ctx = new AudioContext();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        const freq = { click: 220, win: 680, loss: 120, dice: 420, attack: 90, boost: 760, boss: 55, voice: 520, event: 360 }[type] || 220;
-        osc.frequency.value = freq;
-        osc.type = type === "attack" || type === "boss" ? "sawtooth" : "square";
-        gain.gain.setValueAtTime(0.04, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.18);
-    } catch (e) {}
-}
+  const upgrades = [
+    { id: "lab", name: "Laborator STEM", cost: { equipment: 2, innovation: 1 }, prod: { impact: 1 }, icon: "🔬" },
+    { id: "tic", name: "Sală TIC Modernă", cost: { equipment: 3 }, prod: { innovation: 1 }, icon: "💻" },
+    { id: "club", name: "Club de Robotică", cost: { innovation: 2, collaboration: 1 }, prod: { equipment: 1 }, icon: "🤖" }
+  ];
 
-function updateHud() {
-    const scoreEl = document.getElementById('playerScore');
-    const levelEl = document.getElementById('playerLevel');
-    const streakEl = document.getElementById('wrongStreakLabel');
-    const bossEl = document.getElementById('bossHpLabel');
-    const winningEl = document.getElementById('winningScoreLabel');
-    const phaseEl = document.getElementById('missionPhaseLabel');
-    const keysEl = document.getElementById('bossKeysLabel');
-    const classEl = document.getElementById('playerClassLabel');
-    const skillsEl = document.getElementById('skillsLabel');
-    const bossMapEl = document.getElementById('bossMapLabel');
+  const tileTypes = {
+    city: { label: "Oraș", icon: "🏙️", color: "#10ECD2", text: "#062b31", buildable: false, cost: {}, produces: {} },
+    school: { label: "Școală", icon: "🏫", color: "#F5FBFF", text: "#173b4a", buildable: false, cost: {}, produces: {} },
+    road: { label: "Drum normal", icon: "🚗", color: "#D7A86E", text: "#2b1605", buildable: true, cost: { equipment: 1 }, produces: {} },
+    village: { label: "Sat", icon: "🏡", color: "#9BE564", text: "#17320c", buildable: true, cost: { collaboration: 1 }, produces: { collaboration: 1 } },
+    hub: { label: "Hub Digital", icon: "💻", color: "#6CE5FF", text: "#052a36", buildable: true, cost: { innovation: 1, equipment: 1 }, produces: { innovation: 1 } },
+    steam: { label: "Centru STEAM", icon: "🔬", color: "#B388FF", text: "#260d46", buildable: true, cost: { innovation: 1, equipment: 2 }, produces: { impact: 1 } },
+    rural: { label: "Zonă rurală", icon: "🌱", color: "#56C596", text: "#062d21", buildable: true, cost: { collaboration: 1 }, produces: { impact: 1 } },
+    blocked: { label: "Zonă blocată", icon: "⛔", color: "#362B2A", text: "#ffffff", buildable: true, cost: {}, produces: {} },
+    digitalRoad: { label: "Rețea Digitală", icon: "🌐", color: "#10ECD2", text: "#062b31", buildable: true, cost: { innovation: 1, equipment: 1 }, produces: { innovation: 1 } },
+    steamCorridor: { label: "Coridor STEAM", icon: "⚙️", color: "#E51491", text: "#ffffff", buildable: true, cost: { innovation: 1, collaboration: 1 }, produces: { impact: 1 } },
+    ruralRoute: { label: "Rută Rurală", icon: "🚌", color: "#FFD166", text: "#3a2600", buildable: true, cost: { equipment: 1, collaboration: 1 }, produces: { collaboration: 1 } },
+    university: { label: "Centru universitar", icon: "🎓", color: "#F5F7FA", text: "#1f2630", buildable: true, cost: { innovation: 2, equipment: 1, collaboration: 1 }, produces: { innovation: 1, impact: 1 } }
+  };
 
-    if (scoreEl) scoreEl.innerText = localPlayer.score;
-    if (levelEl) levelEl.innerText = getLevel(localPlayer.score);
-    if (streakEl) streakEl.innerText = wrongAnswerStreak;
-    if (bossEl) bossEl.innerText = gameState.bossHP || bossMaxHP;
-    if (winningEl) winningEl.innerText = winningScore;
-    if (phaseEl) phaseEl.innerText = getMissionPhase(localPlayer.score);
-    if (keysEl) keysEl.innerText = localPlayer.bossKeys || 0;
-    if (classEl) {
-        const meta = getPlayerClassMeta();
-        classEl.innerText = `${meta.icon} ${meta.label}`;
-    }
-    if (skillsEl) {
-        const owned = Object.keys(localPlayer.skills || {}).filter(k => localPlayer.skills[k]);
-        skillsEl.innerText = owned.length ? owned.map(k => (skillTree.find(s => s.id === k) || {name:k}).name).join(', ') : 'Nicio abilitate';
-    }
-    if (bossMapEl) bossMapEl.innerText = typeof gameState.bossPosition === 'number' ? `Zona ${gameState.bossPosition}` : 'Necunoscut';
-}
+  const cities = [
+    { name: "Chișinău Digital Hub", specialization: "digitalizare", bonus: "+1 Inovație", x: 15, y: 15 },
+    { name: "Bălți STEM", specialization: "robotică și STEM", bonus: "+1 proiecte STEAM", x: 8, y: 5 },
+    { name: "Edineț EduTech", specialization: "formare regională", bonus: "+1 Competență", x: 3, y: 3 },
+    { name: "Soroca MediaLab", specialization: "media și creație", bonus: "+1 Colaborare", x: 18, y: 4 },
+    { name: "Orhei Innovation", specialization: "hub educațional", bonus: "+1 Echipament", x: 18, y: 10 },
+    { name: "Ungheni Connect", specialization: "rețele școlare", bonus: "drumuri mai eficiente", x: 8, y: 14 },
+    { name: "Cahul Rural Impact", specialization: "comunități rurale", bonus: "impact dublu rural", x: 8, y: 25 },
+    { name: "Comrat STEAM Valley", specialization: "STEAM aplicat", bonus: "+1 Impact STEAM", x: 17, y: 24 },
+    { name: "Cimișlia Green Lab", specialization: "sustenabilitate", bonus: "+1 Green Impact", x: 13, y: 21 },
+    { name: "Dubăsari Bridge", specialization: "conectare comunitară", bonus: "+1 Parteneriat", x: 25, y: 14 }
+  ];
 
-function updateGlobalEventUI() {
-    const eventEl = document.getElementById('globalEventLabel');
-    const eventCard = document.getElementById('globalEventCard');
-    const current = getCurrentGlobalEvent();
-    if (!eventEl) return;
-    if (!current) {
-        eventEl.innerText = 'Niciun eveniment activ';
-        if (eventCard) eventCard.className = 'stat-card event-stat';
+  const playerColors = ["#10ECD2", "#E51491", "#FFD166", "#9BE564", "#B388FF", "#6CE5FF", "#FF8A65", "#F5F7FA", "#56C596", "#D7A86E"];
+
+  const tileDeckTemplate = [
+    "road","road","road","road","road","road","road","road","road","road",
+    "digitalRoad","digitalRoad","digitalRoad","steamCorridor","steamCorridor",
+    "ruralRoute","ruralRoute","village","village","village","rural","rural",
+    "hub","hub","steam","steam","university","blocked"
+  ];
+
+  const actionDeckTemplate = [
+    { type: "Activitate CNIDE", icon: "🧑‍🏫", title: "Formare profesori", mode: "activity", target: ["school"], cost: { collaboration: 1 }, reward: { collaboration: 1, impact: 2 }, mark: "Formare", text: "Aplică pe o școală proprie. Cost: 🤝1. Efect: 🤝+1, ⭐+2." },
+    { type: "Activitate CNIDE", icon: "🔬", title: "Atelier STEAM", mode: "activity", target: ["steam", "school"], cost: { innovation: 1, equipment: 1 }, reward: { impact: 3 }, mark: "STEAM", text: "Aplică pe Centru STEAM sau școală proprie/conectată. Cost: 💡1, 🧰1. Efect: ⭐+3." },
+    { type: "Activitate CNIDE", icon: "🤖", title: "Club robotică", mode: "activity", target: ["school", "steam"], cost: { equipment: 1 }, reward: { innovation: 1, impact: 2 }, mark: "Robotică", text: "Aplică pe școală sau Centru STEAM. Cost: 🧰1. Efect: 💡+1, ⭐+2." },
+    { type: "Activitate CNIDE", icon: "🏆", title: "Hackathon", mode: "activity", target: ["hub", "steam", "university"], cost: { innovation: 1, collaboration: 1 }, reward: { impact: 4 }, mark: "Hackathon", text: "Aplică pe Hub, STEAM sau Universitate. Cost: 💡1, 🤝1. Efect: ⭐+4." },
+    { type: "Activitate CNIDE", icon: "💻", title: "Lecții digitale", mode: "activity", target: ["school", "hub"], cost: { innovation: 1 }, reward: { innovation: 1, impact: 2 }, mark: "Lecții digitale", text: "Aplică pe școală sau hub. Cost: 💡1. Efect: 💡+1, ⭐+2." },
+    { type: "Activitate CNIDE", icon: "🧭", title: "Mentorat", mode: "activity", target: ["school", "hub", "university"], cost: { collaboration: 1 }, reward: { equipment: 1, impact: 2 }, mark: "Mentorat", text: "Aplică pe școală, hub sau universitate. Cost: 🤝1. Efect: 🧰+1, ⭐+2." },
+    { type: "Proiect", icon: "📘", title: "Proiect comunitar", mode: "project", text: "Aplică pe o școală proprie conectată. Cost: 🤝1. Efect: ⭐+2." },
+    { type: "Inovație", icon: "⚡", title: "Resursă digitală nouă", mode: "instantInnovation", text: "Efect imediat: primești 💡+2." },
+    { type: "Problemă", icon: "🚧", title: "Rezistență locală", mode: "blockConnection", text: "Aplică pe un drum/rețea/coridor. Devine zonă blocată temporar." },
+    { type: "Misiune", icon: "🎯", title: "Conectează două școli", mode: "missionConnectivity", text: "Dacă ai minimum 2 școli conectate în zona ta: ⭐+3." },
+    { type: "Parteneriat", icon: "🤝", title: "Colaborare regională", mode: "partnership", text: "Aplică pe o conexiune lângă zona ta. Efect: 🤝+2 și ⭐+1." },
+    { type: "Misiune", icon: "🏫", title: "Extindere școlară", mode: "schoolExpansion", text: "Primești 1 token de extindere. Îl poți folosi pentru a prelua o școală conectată." }
+  ];
+
+  const characterDeckTemplate = [
+    { type: "Personaj", icon: "🧑‍🏫", title: "Profesor", role: "teacher", allowed: ["school"], text: "Plasează într-o școală proprie. Efect: 🤝+1 și ⭐+1." },
+    { type: "Personaj", icon: "👩‍🎓", title: "Elev", role: "student", allowed: ["school", "steam"], text: "Plasează în școală sau centru STEAM propriu. Efect: ⭐+1." },
+    { type: "Personaj", icon: "🧠", title: "Expert STEAM", role: "expert", allowed: ["steam"], text: "Plasează în centru STEAM propriu/conectat. Efect: ⭐+2 și 💡+1." },
+    { type: "Personaj", icon: "🤖", title: "Mentor digital", role: "mentor", allowed: ["hub"], text: "Plasează în hub digital propriu/conectat. Efect: 💡+1 și 🤝+1." }
+  ];
+
+  const eventDeckTemplate = [
+    { type: "Eveniment pozitiv", icon: "🇰🇷", title: "Parteneriat internațional", global: "internationalPartnership", text: "Toți jucătorii primesc 💡+1 și 🤝+1." },
+    { type: "Eveniment pozitiv", icon: "🚀", title: "Finanțare europeană STEM", global: "europeanFunding", text: "Până la finalul rundei, centrele STEAM și hub-urile costă cu 🧰1 mai puțin." },
+    { type: "Eveniment pozitiv", icon: "🏆", title: "Hackathon național", global: "nationalHackathon", text: "Toți jucătorii cu cel puțin 1 hub/STEAM propriu primesc ⭐+2." },
+    { type: "Eveniment pozitiv", icon: "🤖", title: "Donație de roboți", global: "robotDonation", text: "Toți jucătorii primesc 🧰+1. Jucătorul curent primește încă 🧰+1." },
+    { type: "Eveniment negativ", icon: "🌩️", title: "Internet căzut", global: "internetDown", text: "Până la finalul rundei, Rețeaua Digitală nu produce 💡." },
+    { type: "Eveniment negativ", icon: "📉", title: "Rezistență la schimbare", global: "resistance", text: "Toți jucătorii pierd 🤝1 dacă au." },
+    { type: "Eveniment negativ", icon: "🔌", title: "Lipsă echipamente", global: "equipmentShortage", text: "Toți jucătorii pierd 🧰1 dacă au." },
+    { type: "Eveniment negativ", icon: "😴", title: "Lipsă implicare elevi", global: "lowStudentEngagement", text: "Până la finalul rundei, proiectele oferă cu ⭐1 mai puțin." }
+  ];
+
+
+  // --- NOU: Misiuni Publice ---
+  const publicMissionsDatabase = [
+    { id: 1, title: "Capitală Regională", desc: "Conectează 3 orașe la rețeaua ta.", reward: 5, check: (p) => calculateScore(p).connectedCities >= 3 },
+    { id: 2, title: "Rețea Extinsă", desc: "Zonă conectată de minim 15 tile-uri.", reward: 5, check: (p) => calculateScore(p).zoneSize >= 15 },
+    { id: 3, title: "Silicon Valley MD", desc: "Deține 3 Hub-uri sau Centre STEAM.", reward: 5, check: (p) => countOwnedTileType(p.id, "hub") + countOwnedTileType(p.id, "steam") >= 3 },
+    { id: 4, title: "Resurse Umane", desc: "Plasează 4 personaje pe hartă.", reward: 4, check: (p) => calculateScore(p).trainedTeachers + calculateScore(p).involvedStudents >= 4 },
+    { id: 5, title: "Impact Rural", desc: "Controlează 3 sate sau rute rurale.", reward: 4, check: (p) => calculateScore(p).regionalImpact >= 3 },
+    { id: 6, title: "Campion la Proiecte", desc: "Finalizează 3 activități (proiecte).", reward: 5, check: (p) => calculateScore(p).finishedProjects >= 3 },
+    { id: 7, title: "Monopol", desc: "Adună 8 💡 Inovație în mână.", reward: 3, check: (p) => p.resources.innovation >= 8 },
+    { id: 8, title: "Infrastructură", desc: "Adună 8 🧰 Echipament în mână.", reward: 3, check: (p) => p.resources.equipment >= 8 },
+    { id: 9, title: "Diplomat", desc: "Adună 8 🤝 Colaborare în mână.", reward: 3, check: (p) => p.resources.collaboration >= 8 },
+    { id: 10, title: "Pionier", desc: "Extinde-te și controlează 3 școli.", reward: 5, check: (p) => p.controlledSchools && p.controlledSchools.length >= 3 }
+  ];
+
+  // --- NOU: Evenimente de descoperire ---
+  const discoveryEvents = [
+    { type: "reward", icon: "🎁", title: "Sponsor local!", text: "Ai găsit o companie care donează PC-uri: +2 🧰", apply: p => p.resources.equipment += 2 },
+    { type: "reward", icon: "🎁", title: "Comunitate unită!", text: "Oamenii te ajută la construcție: +2 🤝", apply: p => p.resources.collaboration += 2 },
+    { type: "reward", icon: "🎁", title: "Idee genială!", text: "Un startup rural te susține: +2 💡", apply: p => p.resources.innovation += 2 },
+    { type: "reward", icon: "⭐", title: "Presă favorabilă!", text: "Acțiunea ta e la știri: +2 ⭐ Impact", apply: p => p.resources.impact += 2 },
+    { type: "risk", icon: "⚠️", title: "Birocrație!", text: "Pierzi 1 🤝.", apply: p => p.resources.collaboration = Math.max(0, p.resources.collaboration - 1) },
+    { type: "risk", icon: "⚠️", title: "Furtună!", text: "Pierzi 1 🧰.", apply: p => p.resources.equipment = Math.max(0, p.resources.equipment - 1) },
+    { type: "risk", icon: "⚠️", title: "Drum impracticabil!", text: "Pierzi 1 💡.", apply: p => p.resources.innovation = Math.max(0, p.resources.innovation - 1) }
+  ];
+
+  let state = null;
+  let camera = { x: 130, y: 40, zoom: 1 };
+  let dragging = false;
+  let dragStart = { x: 0, y: 0 };
+  let cameraStart = { x: 0, y: 0 };
+  let hoverCell = null;
+
+  function emptyMap() {
+    return Array.from({ length: GRID_SIZE }, () => Array.from({ length: GRID_SIZE }, () => null));
+  }
+
+
+  // --- FUNCȚII CLOUD ---
+  function syncToCloud() {
+    if (!isMultiplayer || !roomCode || !state || !db) return;
+
+    ignoreNextSync = true;
+
+    db.ref("rooms/" + roomCode + "/state")
+      .set(JSON.stringify(state));
+  }
+
+  function listenToCloud() {
+    if (!db) return;
+
+    db.ref("rooms/" + roomCode + "/state").on("value", snapshot => {
+      if (ignoreNextSync) {
+        ignoreNextSync = false;
         return;
-    }
-    eventEl.innerText = `${current.icon} ${current.title}`;
-    if (eventCard) eventCard.className = `stat-card event-stat event-${current.type}`;
-}
+      }
 
-function resetChallengeUI() {
-    const ids = ['miniGameArea','miniGameCanvas','bugGameContainer','memoryGameContainer','miniGameStats','voiceChallengeBtn','closeModalBtn'];
-    ids.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
-    const ans = document.getElementById('answersContainer');
-    if (ans) ans.innerHTML = '';
-    const retry = document.getElementById('retryBtn');
-    if (retry) retry.style.display = 'none';
-    const voice = document.getElementById('voiceResult');
-    if (voice) voice.innerText = '';
-}
-function closeMissionModal() { document.getElementById('challengeModal').classList.add('hidden'); }
+      const rawState = snapshot.val();
 
-// ==========================================
-// 3. SISTEM ANTI-FRAUDĂ / DISCIPLINĂ DE JOC
-// ==========================================
-document.addEventListener('contextmenu', event => {
-    event.preventDefault();
-    if (myPlayerId && !gameFinished) {
-        alert('⚠️ SECURITY BREACH: click dreapta blocat. -5 XP.');
-        localPlayer.score = clampScore(localPlayer.score - 5);
-        syncPlayer();
-    }
-});
+      if (rawState) {
+        state = JSON.parse(rawState);
+        renderAll();
 
-document.addEventListener('keydown', function(event) {
-    const blockedShortcut = event.key === 'F12' ||
-        (event.ctrlKey && ['s', 'u'].includes(event.key.toLowerCase())) ||
-        (event.ctrlKey && event.shiftKey && ['i', 'j', 'c'].includes(event.key.toLowerCase()));
-    if (blockedShortcut) {
-        event.preventDefault();
-        if (myPlayerId && !gameFinished) {
-            alert('⚠️ SECURITY BREACH: tentativă de ocolire a jocului. -10 XP.');
-            localPlayer.score = clampScore(localPlayer.score - 10);
-            syncPlayer();
+        if (isMyTurn()) {
+          setStatus("🎯 Este rândul tău!");
         }
+      }
+    });
+  }
+
+  function isMyTurn() {
+    if (!isMultiplayer) return true;
+    return state.currentPlayer === (localPlayerId - 1);
+  }
+
+  function shuffle(array) {
+    const copy = array.slice();
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
     }
-});
+    return copy;
+  }
 
-document.addEventListener('selectstart', event => event.preventDefault());
+  function makeTile(type, extra = {}) {
+    return {
+      type,
+      owner: extra.owner ?? null,
+      cityName: extra.cityName ?? null,
+      specialization: extra.specialization ?? null,
+      bonus: extra.bonus ?? null,
+      slots: type === "school" ? [
+        "🔬 Laborator STEAM",
+        "🤖 Club Robotică",
+        "💻 Sală TIC",
+        "🧠 Centru AI",
+        "🎨 Studio Media",
+        "🧑‍🏫 Centru Formare"
+      ] : null,
+      characters: [],
+      activated: false,
+      activityMarks: []
+    };
+  }
 
-// ==========================================
-// 4. BAZA DE DATE ÎNTREBĂRI
-// ==========================================
-const questionsDB = [
-    // --- Cap 6.1 Schema funcțională ---
-    { q: "Ce unitate coordonează funcționarea tuturor componentelor calculatorului?", options: ["UCC", "UAL", "Memoria Externă"], correct: 0 },
-    { q: "Ce unitate execută operațiile aritmetice și logice?", options: ["Unitatea de Comandă", "Unitatea Aritmetică și Logică", "Unitatea I/E"], correct: 1 },
-    { q: "Cum se numește ansamblul de fire prin care circulă informația între componente?", options: ["Cablu de rețea", "Magistrală", "Fibră optică"], correct: 1 },
-    { q: "Care memorie comunică direct cu procesorul?", options: ["Memoria Internă (RAM)", "Hard Disk-ul (HDD)", "Memoria USB"], correct: 0 },
-    { q: "Ce memorie păstrează datele definitiv, chiar și când calculatorul este oprit?", options: ["Memoria RAM", "Memoria Externă", "Memoria Cache"], correct: 1 },
-    { q: "Cine asigură introducerea datelor în sistem?", options: ["Dispozitivele de ieșire", "UCC", "Dispozitivele de intrare"], correct: 2 },
-    { q: "Care din următoarele formează Unitatea Centrală de Procesare (CPU)?", options: ["UCC + UAL", "Memoria + Dispozitive I/E", "RAM + ROM"], correct: 0 },
-    // --- Cap 6.2 Formatul instrucțiunilor ---
-    { q: "Din ce este formată o instrucțiune în cod-calculator?", options: ["Nume + Extensie", "Codul operației + Adresele operanzilor", "Sintaxă + Variabile"], correct: 1 },
-    { q: "Ce indică partea de 'cod al operației' dintr-o instrucțiune?", options: ["Adresa memoriei", "Natura acțiunii (ex: adunare)", "Dimensiunea fișierului"], correct: 1 },
-    { q: "Ce indică adresele operanzilor dintr-o instrucțiune?", options: ["Locul unde se află datele în memorie", "Tipul procesorului", "IP-ul calculatorului"], correct: 0 },
-    // --- Cap 6.3 Tipuri de instrucțiuni ---
-    { q: "Ce instrucțiuni modifică ordinea naturală de execuție a unui program?", options: ["De transfer", "De salt", "Aritmetice"], correct: 1 },
-    { q: "Ce instrucțiune copiază o dată din memorie în procesor?", options: ["Instrucțiune de salt", "Instrucțiune de oprire", "Instrucțiune de transfer"], correct: 2 },
-    { q: "Adunarea și scăderea fac parte din categoria instrucțiunilor:", options: ["De transfer", "Aritmetice și logice", "De comparare"], correct: 1 },
-    // --- Cap 6.4 Limbaje de asamblare ---
-    { q: "Ce limbaj folosește mnemonici (prescurtări din engleză) în loc de cod binar?", options: ["Limbaj mașină", "Limbajul de asamblare", "Limbajul HTML"], correct: 1 },
-    { q: "Ce program traduce codul de asamblare în limbaj cod-calculator (binar)?", options: ["Asamblorul", "Compilatorul", "Sistemul de operare"], correct: 0 },
-    { q: "Instrucțiunea ADD într-un limbaj de asamblare reprezintă:", options: ["Adunarea", "Scăderea", "Saltul condiționat"], correct: 0 },
-    // --- Cap 6.5 Resurse tehnice și programate ---
-    { q: "Totalitatea componentelor fizice ale calculatorului se numește:", options: ["Software", "Hardware", "Freeware"], correct: 1 },
-    { q: "Programele care asigură funcționarea calculatorului formează:", options: ["Resursele tehnice", "Resursele fizice", "Resursele programate (Software)"], correct: 2 },
-    { q: "Care dintre următoarele este o resursă programată?", options: ["Sistemul de operare", "Placa de bază", "Microprocesorul"], correct: 0 },
-    // --- Cap 6.6 Memorii magnetice ---
-    { q: "Pe ce suport magnetic accesul la date este strict secvențial (nu direct)?", options: ["Banda magnetică", "Hard Disk-ul (HDD)", "Memoria RAM"], correct: 0 },
-    { q: "Suprafața unui disc magnetic este împărțită în cercuri concentrice numite:", options: ["Sectoare", "Piste", "Cilindri"], correct: 1 },
-    { q: "Împărțirea pistelor de pe un disc magnetic se face în porțiuni numite:", options: ["Blocuri", "Pachete", "Sectoare"], correct: 2 },
-    { q: "Ce formează totalitatea pistelor de aceeași rază de pe toate fețele unui HDD?", options: ["Un cilindru", "Un cluster", "Un format"], correct: 0 },
-    { q: "Timpul de acces la datele de pe un HDD se măsoară de regulă în:", options: ["Nanosecunde (ns)", "Milisecunde (ms)", "Picosecunde (ps)"], correct: 1 },
-    // --- Cap 6.7 Memorii optice ---
-    { q: "Ce tehnologie folosește fasciculul laser pentru citirea datelor?", options: ["Benzi magnetice", "Discuri magnetice", "Discuri optice"], correct: 2 },
-    { q: "Care disc optic are, de obicei, cea mai mare capacitate de stocare?", options: ["CD", "DVD", "Blu-ray Disc (BD)"], correct: 2 },
-    { q: "O unitate inscripționată cu 'CD-ROM' poate scrie date pe un CD gol?", options: ["Da", "Nu, poate doar citi", "Doar dacă este formatat"], correct: 1 },
-    { q: "Un disc optic stochează informația sub formă de:", options: ["Adâncituri (pits) și porțiuni plane (lands)", "Sarcini electrice", "Domenii magnetizate"], correct: 0 },
-    // --- Cap 6.8 Vizualizatorul și tastatura ---
-    { q: "Cel mai mic element luminos de pe ecranul unui monitor se numește:", options: ["Vector", "Pixel", "Diodă"], correct: 1 },
-    { q: "Numărul de pixeli afișați pe orizontală și verticală definește:", options: ["Contrastul", "Luminozitatea", "Rezoluția ecranului"], correct: 2 },
-    { q: "La apăsarea unei taste, tastatura trimite către unitatea centrală:", options: ["Codul ASCII/numeric al tastei", "Culoarea caracterului", "Tipul fontului"], correct: 0 },
-    { q: "Culorile pe un monitor standard sunt formate prin combinarea a 3 culori de bază:", options: ["Roșu, Galben, Albastru", "Roșu, Verde, Albastru (RGB)", "Cyan, Magenta, Galben"], correct: 1 },
-    // --- Cap 6.9 Imprimante ---
-    { q: "Ce imprimantă folosește o bandă tușată lovită de ace pentru a tipări?", options: ["Laser", "Matricială", "Cu jet de cerneală"], correct: 1 },
-    { q: "Care imprimantă pulverizează picături fine de lichid pe hârtie?", options: ["Matricială", "Laser", "Cu jet de cerneală"], correct: 2 },
-    { q: "Ce imprimantă folosește o pulbere uscată (toner) și un fascicul luminos?", options: ["Imprimanta Laser", "Imprimanta 3D", "Imprimanta Termică"], correct: 0 },
-    { q: "Calitatea imprimării se măsoară în:", options: ["BPS (biți pe secundă)", "DPI (puncte per inch)", "Hz (Hertzi)"], correct: 1 },
-    // --- Cap 6.10 Clasificarea calculatoarelor ---
-    { q: "Cele mai performante calculatoare, folosite în cercetarea spațială, sunt:", options: ["Mainframe", "Supercalculatoare", "Minicalculatoare"], correct: 1 },
-    { q: "Calculatoarele de mari dimensiuni care deservesc simultan mii de utilizatori se numesc:", options: ["Microcalculatoare", "Tablete", "Mainframe-uri"], correct: 2 },
-    { q: "Din ce clasă face parte un PC (Personal Computer) standard?", options: ["Microcalculatoare", "Mainframe", "Supercalculatoare"], correct: 0 },
-    { q: "Laptopurile și tabletele sunt concepute având ca prioritate:", options: ["Portabilitatea și autonomia", "Puterea maximă de calcul", "Capacitatea de stocare infinită"], correct: 0 },
-    // --- Cap 6.11 Microprocesorul ---
-    { q: "Care este piesa centrală a unui microcalculator, montată pe placa de bază?", options: ["Sursa de alimentare", "Microprocesorul", "Unitatea optică"], correct: 1 },
-    { q: "Frecvența de tact (viteza) unui microprocesor modern se măsoară în:", options: ["Gigabyte (GB)", "Gigahertzi (GHz)", "Megabiți per secundă (Mbps)"], correct: 1 },
-    { q: "Ce semnifică un microprocesor pe '64 de biți'?", options: ["Are 64 de nuclee", "Lățimea magistralei de date/adrese este de 64 biți", "Consumă 64 Wați"], correct: 1 },
-    { q: "Pentru a spori performanța, microprocesoarele moderne conțin mai multe:", options: ["Ecrane", "Nuclee de procesare (Cores)", "Plăci video"], correct: 1 },
-    // --- Cap 7.1 Introducere în rețele ---
-    { q: "Cum se numește ansamblul de calculatoare interconectate pentru a face schimb de date?", options: ["Sistem de operare", "Rețea de calculatoare", "Bază de date"], correct: 1 },
-    { q: "Ce arie de acoperire are o rețea LAN (Local Area Network)?", options: ["O clădire sau un campus", "Un oraș întreg", "O țară sau un continent"], correct: 0 },
-    { q: "Rețeaua care conectează instituții la nivelul unui oraș este de tip:", options: ["WAN", "LAN", "MAN (Metropolitan Area Network)"], correct: 2 },
-    { q: "Rețeaua globală (precum Internetul) se încadrează în categoria:", options: ["WAN (Wide Area Network)", "MAN", "LAN"], correct: 0 },
-    // --- Cap 7.2 Tehnologii de cooperare ---
-    { q: "Calculatorul care oferă resurse și servicii altor calculatoare se numește:", options: ["Client", "Server", "Hub"], correct: 1 },
-    { q: "Calculatorul care solicită informații de la un Server se numește:", options: ["Client", "Ruter", "Switch"], correct: 0 },
-    { q: "O rețea în care toate calculatoarele au drepturi egale se numește:", options: ["Client-Server", "Peer-to-Peer (De la egal la egal)", "Mainframe"], correct: 1 },
-    // --- Cap 7.3 Topologia și arhitectura rețelelor ---
-    { q: "Dispunerea fizică a cablurilor și a calculatoarelor într-o rețea formează:", options: ["Topologia rețelei", "Protocolul rețelei", "Sistemul de operare"], correct: 0 },
-    { q: "Topologia în care toate calculatoarele sunt legate la un singur cablu central este:", options: ["Topologia Stea", "Topologia Magistrală (Bus)", "Topologia Inel"], correct: 1 },
-    { q: "Topologia în care fiecare nod este conectat la un dispozitiv central (ex: Switch) este:", options: ["Stea", "Inel", "Magistrală"], correct: 0 },
-    { q: "Topologia în care semnalul trece de la un calculator la altul formând o buclă închisă este:", options: ["Topologia Inel", "Topologia Stea", "Topologia Punct-la-Punct"], correct: 0 },
-    { q: "Care este modelul de referință teoretic folosit pentru a explica arhitectura rețelelor?", options: ["Modelul TCP", "Modelul ISO/OSI (cu 7 niveluri)", "Modelul HTML"], correct: 1 },
-    { q: "Pe ce nivel al modelului OSI se află cablurile fizice și semnalele electrice?", options: ["Nivelul Fizic", "Nivelul Aplicație", "Nivelul Rețea"], correct: 0 },
-    // --- Cap 7.4 Rețeaua Internet ---
-    { q: "Care este setul de protocoale fundamental care stă la baza Internetului?", options: ["HTTP/FTP", "TCP/IP", "SMTP/POP3"], correct: 1 },
-    { q: "Ce identificator numeric unic primește fiecare dispozitiv conectat la Internet?", options: ["Adresa MAC", "Adresa de email", "Adresa IP"], correct: 2 },
-    { q: "Pentru a fi transmise prin Internet, fișierele mari sunt tăiate în bucăți mici numite:", options: ["Sectoare", "Pachete de date", "Clustere"], correct: 1 },
-    { q: "Echipamentul care dirijează pachetele de date pe cel mai bun traseu este:", options: ["Monitorul", "Ruterul (Router)", "Imprimanta de rețea"], correct: 1 },
-    { q: "Rolul protocolului IP (Internet Protocol) este de a:", options: ["Asigura adresarea și rutarea pachetelor", "Afișa pagini web colorate", "Tipări documente"], correct: 0 },
-    { q: "Rolul protocolului TCP (Transmission Control Protocol) este de a:", options: ["Căuta viruși", "Asigura asamblarea corectă și fără erori a pachetelor la destinație", "Genera parole"], correct: 1 },
-    // --- Cap 7.5 Servicii Internet ---
-    { q: "Ce serviciu asociază un IP (ex: 142.250.190.46) cu un nume ușor de reținut (google.com)?", options: ["WWW", "FTP", "DNS (Domain Name System)"], correct: 2 },
-    { q: "Serviciul care permite vizualizarea paginilor multimedia interconectate se numește:", options: ["WWW (World Wide Web)", "Telnet", "E-mail"], correct: 0 },
-    { q: "Ce protocol se utilizează pentru transferul paginilor web în browser?", options: ["SMTP", "HTTP / HTTPS", "FTP"], correct: 1 },
-    { q: "Cum se numesc legăturile care te duc de la o pagină web la alta?", options: ["Hiperlinkuri", "Protocoale", "Noduri"], correct: 0 },
-    { q: "Ce serviciu folosești exclusiv pentru transferul de fișiere (upload/download)?", options: ["DNS", "WWW", "FTP (File Transfer Protocol)"], correct: 2 },
-    { q: "Ce serviciu permite schimbul de mesaje electronice asincrone?", options: ["Chat", "E-mail (Poșta Electronică)", "Ping"], correct: 1 },
-    { q: "Care dintre următoarele este un protocol folosit la trimiterea unui E-mail?", options: ["SMTP", "HTTP", "TCP"], correct: 0 },
-    { q: "Unde este stocată poșta electronică până când utilizatorul decide să o citească?", options: ["Pe hard disk-ul local", "În cutia poștală de pe Serverul de E-mail", "În ruter"], correct: 1 },
-    { q: "Ce serviciu permite conectarea de la distanță la un alt calculator prin consolă text?", options: ["WWW", "Telnet / SSH", "DNS"], correct: 1 },
-    { q: "Cum se numește programul utilizat pentru a accesa și afișa pagini web?", options: ["Editor de text", "Browser (Navigator)", "Sistem de operare"], correct: 1 },
-    // --- Extra Teorie recapitulativă ---
-    { q: "Care memorie este volatilă (își pierde conținutul la oprirea curentului)?", options: ["HDD", "ROM", "RAM"], correct: 2 },
-    { q: "Ce componentă măsoară capacitatea sa în Gigabytes (GB) sau Terabytes (TB)?", options: ["Procesorul", "Unitatea de stocare (HDD/SSD)", "Monitorul"], correct: 1 },
-    { q: "Dacă viteza Internetului tău este de 100 Mbps, litera 'b' mic înseamnă:", options: ["Biți (Bits)", "Bytes (Octeți)", "Blocuri"], correct: 0 },
-    { q: "Care din următoarele rețele este cea mai restrânsă ca spațiu geografic?", options: ["WAN", "MAN", "LAN"], correct: 2 },
-    { q: "Ce tip de cablu transmite informația sub formă de impulsuri luminoase?", options: ["Cablul coaxial", "Cablul UTP", "Fibra optică"], correct: 2 },
-    { q: "Ce extensie sugerează că fișierul este o pagină web creată cu marcaje hipertext?", options: [".txt", ".html / .htm", ".exe"], correct: 1 },
-    { q: "O pagină web este descrisă cu ajutorul limbajului de marcare:", options: ["C++", "Java", "HTML"], correct: 2 },
-    { q: "Codificarea standard care alocă un număr unic fiecărui caracter de pe tastatură este:", options: ["IP", "TCP", "ASCII / Unicode"], correct: 2 },
-    { q: "Dispozitivele I/E (Intrare/Ieșire) sunt controlate de programe speciale numite:", options: ["Drivere", "Browsere", "Antiviruși"], correct: 0 },
-    { q: "În schema von Neumann, datele și instrucțiunile programului se află:", options: ["În memorii separate", "În aceeași memorie internă", "Doar pe HDD"], correct: 1 }
-];
+  function createInitialMap() {
+    const map = emptyMap();
 
-const triviaDB = [
-    { q: "Cine este considerat inventatorul World Wide Web (WWW)?", options: ["Bill Gates", "Steve Jobs", "Tim Berners-Lee"], correct: 2 },
-    { q: "Ce reprezintă codul de eroare '404' pe Internet?", options: ["Pagina nu a fost găsită", "Acces interzis", "Serverul a căzut"], correct: 0 },
-    { q: "Care a fost numele primului calculator electronic de uz general?", options: ["Macintosh", "ENIAC", "Apollo 11"], correct: 1 },
-    { q: "Care companie de tehnologie are logo-ul un măr mușcat?", options: ["Microsoft", "IBM", "Apple"], correct: 2 },
-    { q: "Câți biți formează un Byte (octet)?", options: ["4", "8", "16"], correct: 1 },
-    { q: "Cum se numește mascota oficială (pinguinul) a sistemului Linux?", options: ["Tux", "Linus", "Mac"], correct: 0 },
-    { q: "Ce companie a creat sistemul de operare Windows?", options: ["Google", "Microsoft", "Intel"], correct: 1 },
-    { q: "Care este cel mai utilizat sistem de operare pentru smartphone-uri în lume?", options: ["iOS", "Symbian", "Android"], correct: 2 },
-    { q: "În ce an a fost lansat primul model de iPhone?", options: ["2000", "2007", "2010"], correct: 1 },
-    { q: "Ce tastă este cel mai frecvent folosită pentru a reîncărca (Refresh) o pagină web?", options: ["F5", "Esc", "F1"], correct: 0 },
-    { q: "Ce înseamnă acronimul USB?", options: ["Universal Serial Bus", "United State Band", "User System Block"], correct: 0 },
-    { q: "Care limbaj de programare este folosit pentru a stiliza (da culoare) paginilor web?", options: ["Python", "C++", "CSS"], correct: 2 },
-    { q: "Care este simbolul folosit pentru a scrie un comentariu pe un singur rând în C++?", options: ["//", "/*", "#"], correct: 0 },
-    { q: "Ce companie majoră a cumpărat platforma GitHub în 2018?", options: ["Facebook", "Microsoft", "Amazon"], correct: 1 },
-    { q: "Cum se numește software-ul creat special pentru a dăuna calculatorului?", options: ["Freeware", "Malware", "Firmware"], correct: 1 },
-    { q: "Care a fost prima consolă de jocuri cu succes masiv lansată de Nintendo?", options: ["PlayStation", "Xbox", "NES"], correct: 2 },
-    { q: "În ce sistem de numerație efectuează calculele un procesor?", options: ["Zecimal", "Hexazecimal", "Binar"], correct: 2 },
-    { q: "Ce reprezintă 'Bluetooth'?", options: ["Un antivirus", "O tehnologie wireless pe distanțe scurte", "Un tip de monitor"], correct: 1 },
-    { q: "Ce limbaj de programare a fost numit după o trupă de comedie britanică?", options: ["Java", "Ruby", "Python"], correct: 2 },
-    { q: "Ce combinație de taste folosești pentru a copia rapid un text selectat?", options: ["Ctrl+V", "Ctrl+C", "Ctrl+X"], correct: 1 }
-];
+    cities.forEach((city) => {
+      place(map, city.x, city.y, makeTile("city", {
+        cityName: city.name,
+        specialization: city.specialization,
+        bonus: city.bonus
+      }));
 
+      [[city.x - 1, city.y], [city.x + 1, city.y], [city.x, city.y + 1]].forEach((pos, index) => {
+        place(map, pos[0], pos[1], makeTile("school", {
+          cityName: city.name,
+          specialization: `Școala ${index + 1}`,
+          bonus: "6 sloturi dezvoltare"
+        }));
+      });
 
+      place(map, city.x, city.y - 1, makeTile("hub", { cityName: city.name }));
+    });
 
-// ==========================================
-// 5. GENERATOR HARTĂ
-// ==========================================
-function generateRandomBoard() {
-    let eventsPool = [];
-    for(let i=0; i<10; i++) eventsPool.push('question');
-    for(let i=0; i<4; i++) eventsPool.push('trivia');
-    for(let i=0; i<4; i++) eventsPool.push('minigame');
-    for(let i=0; i<5; i++) eventsPool.push('attack');
-    for(let i=0; i<4; i++) eventsPool.push('boost');
-    for(let i=0; i<3; i++) eventsPool.push('boss');
-    for(let i=0; i<2; i++) eventsPool.push('voice');
-    for(let i=0; i<7; i++) eventsPool.push('empty');
+    [
+      [0, 1, "digitalRoad"], [0, 4, "road"], [0, 5, "road"], [0, 9, "digitalRoad"],
+      [1, 2, "road"], [1, 3, "steamCorridor"], [5, 6, "ruralRoute"],
+      [0, 8, "road"], [8, 7, "steamCorridor"], [7, 6, "ruralRoute"],
+      [4, 3, "road"], [4, 9, "digitalRoad"]
+    ].forEach(([a, b, type]) => drawRoute(map, cities[a].x, cities[a].y, cities[b].x, cities[b].y, type));
 
-    for (let i = eventsPool.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [eventsPool[i], eventsPool[j]] = [eventsPool[j], eventsPool[i]];
+    [[2,8],[5,11],[11,18],[4,22],[22,20],[26,9],[20,27],[11,3]].forEach(([x,y]) => place(map, x, y, makeTile("village")));
+    [[1,20],[2,21],[3,22],[24,23],[25,24],[21,25],[6,27]].forEach(([x,y]) => place(map, x, y, makeTile("rural")));
+    [[13,8],[14,8],[23,6],[24,6],[21,16],[22,16],[4,17],[5,17]].forEach(([x,y]) => place(map, x, y, makeTile("blocked")));
+    [[14,14],[10,6],[16,26]].forEach(([x,y]) => place(map, x, y, makeTile("university")));
+    [[9,5],[18,23],[13,20],[17,11]].forEach(([x,y]) => place(map, x, y, makeTile("steam")));
+
+    return map;
+  }
+
+  function place(map, x, y, tile) {
+    if (inside(x, y) && !map[y][x]) map[y][x] = tile;
+  }
+
+  function drawRoute(map, x1, y1, x2, y2, type) {
+    let x = x1;
+    let y = y1;
+    while (x !== x2) {
+      x += x < x2 ? 1 : -1;
+      if (!map[y][x]) map[y][x] = makeTile(type);
     }
-
-    localTileMap = {};
-    for(let i = 1; i < boardSize; i++) localTileMap[i] = eventsPool[i - 1] || 'empty';
-    localTileMap[coopGatePosition] = 'coop';
-    updateBoardVisuals();
-}
-
-function updateBoardVisuals() {
-    for(let i = 0; i < boardSize; i++) {
-        let cell = document.getElementById(`cell-${i}`);
-        if(!cell) continue;
-        let type = i === 0 ? 'start' : (localTileMap[i] || 'empty');
-        let meta = i === 0 ? { icon: '🚀', label: 'Start', className: 'tile-start' } : (tileMeta[type] || tileMeta.empty);
-        cell.className = `cell ${meta.className}`;
-        cell.innerHTML = `<span class="zone-title">${i === 0 ? 'START' : 'Zona ' + i}</span><span class="zone-icon">${meta.icon}</span><small>${meta.label}</small>`;
+    while (y !== y2) {
+      y += y < y2 ? 1 : -1;
+      if (!map[y][x]) map[y][x] = makeTile(type);
     }
-    updateBoardLive(allNetworkPlayers);
-}
+  }
 
-// ==========================================
-// 6. AUTENTIFICARE ȘI MULTIPLAYER
-// ==========================================
-document.getElementById('joinGameBtn').addEventListener('click', () => {
-    let name = cleanName(document.getElementById('playerNameInput').value);
-    if (name.length < 3) return alert("Introdu un nume valid!");
+  function inside(x, y) {
+    return x >= 0 && y >= 0 && x < GRID_SIZE && y < GRID_SIZE;
+  }
 
-    const selectedClass = document.querySelector('input[name="playerClass"]:checked')?.value || 'hacker';
-    myPlayerId = "agent_" + Math.random().toString(36).substr(2, 9);
-    localPlayer = {
-        name,
-        position: 0,
-        score: 100,
-        winner: false,
-        bossKeys: 0,
-        playerClass: selectedClass,
-        skills: {},
-        lastSkillLevel: 1,
-        appliedEvents: {}
+  function initPlayerSelect() {
+    ui.playerCount.innerHTML = "";
+    for (let i = 3; i <= 10; i++) {
+      const option = document.createElement("option");
+      option.value = String(i);
+      option.textContent = `${i} jucători`;
+      if (i === 4) option.selected = true;
+      ui.playerCount.appendChild(option);
+    }
+  }
+
+  function newGame() {
+    const count = Number(ui.playerCount.value || 4);
+
+    state = {
+      map: createInitialMap(),
+      discovered: Array.from({ length: GRID_SIZE }, () => Array.from({ length: GRID_SIZE }, () => false)),
+      players: Array.from({ length: count }, (_, index) => {
+        const playerFaction = factions[index % factions.length];
+        return {
+        id: index + 1,
+        name: `Jucător ${index + 1}`,
+        color: playerColors[index],
+        school: null,
+        controlledSchools: [],
+        expansionTokens: 0,
+        faction: playerFaction,
+        upgrades: [],
+        resources: { innovation: 2, equipment: 2, collaboration: 2, impact: 0 },
+        production: { innovation: 1, equipment: 1, collaboration: 1, impact: 0 }
+      };
+      }),
+      currentPlayer: 0,
+      phase: "chooseSchool",
+      selectedCell: null,
+      currentTile: null,
+      draftingTiles: [],
+      tileDrawnThisTurn: false,
+      actionDrawnThisTurn: false,
+      characterDrawnThisTurn: false,
+      eventDrawnThisRound: false,
+      pendingAction: null,
+      pendingCharacter: null,
+      currentCardDisplay: null,
+      cardHistory: [],
+      tileDeck: shuffle(tileDeckTemplate),
+      actionDeck: shuffle(actionDeckTemplate),
+      characterDeck: shuffle(characterDeckTemplate),
+      eventDeck: shuffle(eventDeckTemplate),
+      round: 1,
+      maxRounds: 20,
+      targetImpact: 50,
+      gameOver: false,
+      globalEvent: null,
+      activeMissions: shuffle([...publicMissionsDatabase]).slice(0, 3).map(m => ({ ...m, completedBy: null }))
     };
 
-    playersRef.child(myPlayerId).set(localPlayer);
-    initSharedGameState();
-    document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('gameUI').style.display = 'block';
-    document.getElementById('displayName').innerText = name;
-    updateHud();
-    initBoard();
-    listenToNetwork();
-    listenToGameState();
-    listenToCoopGate();
-});
-
-document.getElementById('playerNameInput').addEventListener('keydown', event => {
-    if (event.key === 'Enter') document.getElementById('joinGameBtn').click();
-});
-document.getElementById('rulesBtn').addEventListener('click', showRules);
-document.getElementById('resetArenaBtn')?.addEventListener('click', requestNewArenaSession);
-document.getElementById('closeModalBtn').addEventListener('click', () => {
-    closeMissionModal();
-    if (!gameFinished && !skillChoiceOpen && !coopMissionLocalOpen) setGameLocked(false);
-});
-window.addEventListener('beforeunload', () => { if (myPlayerId) playersRef.child(myPlayerId).remove(); });
-
-function initBoard() {
-    const gameBoard = document.getElementById('gameBoard');
-    gameBoard.innerHTML = '';
-    for (let i = 0; i < boardSize; i++) {
-        let cell = document.createElement('div');
-        cell.classList.add('cell');
-        cell.id = `cell-${i}`;
-        gameBoard.appendChild(cell);
-    }
-    generateRandomBoard();
-}
-
-function listenToNetwork() {
-    playersRef.on("value", (snapshot) => {
-        allNetworkPlayers = snapshot.val() || {};
-        updateBoardLive(allNetworkPlayers);
-        updateLeaderboard(allNetworkPlayers);
-        if (waitingAtCoopGate && localPlayer.position === coopGatePosition && !gameFinished) checkCoopGate();
-        const winners = Object.values(allNetworkPlayers).filter(p => p.winner);
-        if (winners.length && !gameFinished) announceExternalWinner(winners[0]);
-    });
-}
-
-function initSharedGameState() {
-    gameStateRef.transaction(state => {
-        if (!state || state.status === "ended") {
-            return {
-                status: "running",
-                startedAt: firebase.database.ServerValue.TIMESTAMP,
-                durationMs: gameDurationMs,
-                minFastWinMs,
-                winningScore,
-                sessionId: Date.now(),
-                coopGate: null,
-                bossHP: bossMaxHP,
-                bossPosition: randomBetween(8, boardSize - 5),
-                bossLastMoveAt: Date.now(),
-                globalEvent: null,
-                lastGlobalEventAt: Date.now()
-            };
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const t = state.map[y][x];
+        if (t && !["village", "rural", "blocked"].includes(t.type)) {
+          state.discovered[y][x] = true;
+          revealArea(x, y, 1, false);
         }
-        return state;
-    });
-}
-
-function listenToGameState() {
-    gameStateRef.on("value", snapshot => {
-        gameState = snapshot.val() || {};
-        updateSessionClock();
-        updateHud();
-        updateGlobalEventUI();
-        updateBoardLive(allNetworkPlayers);
-        applyGlobalEventIfNeeded();
-        checkBossMapEncounter();
-
-        if (gameState.status === "ended") {
-            gameFinished = true;
-            setGameLocked(true);
-            showEndScreen(gameState.message || `🏁 Joc încheiat. Câștigător: ${gameState.winnerName || "necunoscut"}.`);
-            return;
-        }
-        if (!gameTimerInterval) gameTimerInterval = setInterval(updateSessionClock, 1000);
-    });
-}
-
-function updateSessionClock() {
-    const timerEl = document.getElementById('sessionTimerLabel');
-    const progressEl = document.getElementById('sessionProgressFill');
-    const fastWinEl = document.getElementById('fastWinLabel');
-    if (!gameState.startedAt) return;
-
-    const duration = Number(gameState.durationMs || gameDurationMs);
-    const elapsed = getElapsedMs();
-    const remaining = Math.max(0, duration - elapsed);
-    if (timerEl) timerEl.innerText = formatTime(remaining);
-    if (progressEl) progressEl.style.width = `${Math.min(100, (elapsed / duration) * 100)}%`;
-    if (fastWinEl) fastWinEl.innerText = canFastWin() ? "Victorie rapidă activă" : `Victorie rapidă după ${formatTime(minFastWinMs - elapsed)}`;
-
-    maybeTriggerGlobalEvent();
-    maybeMoveBossOnMap();
-
-    if (remaining <= 0 && gameState.status !== "ended") finishGameByTime();
-}
-
-function getTopPlayer() {
-    const players = Object.values(allNetworkPlayers || {});
-    if (!players.length && localPlayer.name) return localPlayer;
-    return players.sort((a, b) => (b.score || 0) - (a.score || 0))[0];
-}
-function finishGameByTime() {
-    const top = getTopPlayer();
-    if (!top) return;
-    const message = `⏱️ Timpul de 30 minute s-a încheiat! Câștigător: ${top.name} cu ${top.score || 0} XP.`;
-    gameStateRef.transaction(state => {
-        if (state && state.status === "running") {
-            state.status = "ended";
-            state.endedAt = firebase.database.ServerValue.TIMESTAMP;
-            state.winnerName = top.name;
-            state.winnerScore = top.score || 0;
-            state.reason = "time";
-            state.message = message;
-        }
-        return state;
-    });
-}
-function finishGameByFastWin() {
-    const message = `🏆 VICTORIE RAPIDĂ! ${localPlayer.name} a atins ${localPlayer.score} XP după minutul 20 și a obținut cheia Boss.`;
-    gameStateRef.transaction(state => {
-        if (state && state.status === "running") {
-            state.status = "ended";
-            state.endedAt = firebase.database.ServerValue.TIMESTAMP;
-            state.winnerName = localPlayer.name;
-            state.winnerScore = localPlayer.score;
-            state.reason = "fast-win";
-            state.message = message;
-        }
-        return state;
-    });
-}
-function requestNewArenaSession() {
-    const ok = confirm("Resetezi arena pentru o sesiune nouă de 30 minute? Se vor șterge jucătorii și scorurile curente.");
-    if (!ok) return;
-    playersRef.remove();
-    gameStateRef.set({
-        status: "running",
-        startedAt: firebase.database.ServerValue.TIMESTAMP,
-        durationMs: gameDurationMs,
-        minFastWinMs,
-        winningScore,
-        sessionId: Date.now(),
-        coopGate: null,
-        bossHP: bossMaxHP,
-        bossPosition: randomBetween(8, boardSize - 5),
-        bossLastMoveAt: Date.now(),
-        globalEvent: null,
-        lastGlobalEventAt: Date.now()
-    });
-    alert("Arena a fost resetată. Elevii se pot reconecta.");
-    location.reload();
-}
-
-function updateBoardLive(players) {
-    document.querySelectorAll('.player-token, .boss-map-token').forEach(el => el.remove());
-    const offsets = {};
-    for (let id in players) {
-        let p = players[id];
-        let cell = document.getElementById(`cell-${p.position}`);
-        if (cell) {
-            offsets[p.position] = (offsets[p.position] || 0) + 1;
-            let token = document.createElement('div');
-            token.classList.add('player-token');
-            token.title = `${p.name} - ${p.score} XP - ${playerClasses[p.playerClass]?.label || 'Agent'}`;
-            token.innerText = (playerClasses[p.playerClass]?.icon || '👤');
-            token.style.backgroundColor = id === myPlayerId ? "#00ffcc" : "#ff0055";
-            token.style.right = (5 + (offsets[p.position] - 1) * 24) + "px";
-            cell.appendChild(token);
-        }
+      }
     }
 
-    if (typeof gameState.bossPosition === 'number') {
-        const bossCell = document.getElementById(`cell-${gameState.bossPosition}`);
-        if (bossCell) {
-            let bossToken = document.createElement('div');
-            bossToken.classList.add('boss-map-token');
-            bossToken.innerText = '👾';
-            bossToken.title = `AI Core Boss - ${gameState.bossHP || bossMaxHP} HP`;
-            bossCell.appendChild(bossToken);
-        }
+    if (ui.draftZone) ui.draftZone.style.display = "none";
+    showCard(null);
+    setStatus("Joc nou creat. Jucătorul 1 alege o școală liberă.");
+    centerMap();
+    renderAll();
+  }
+
+  function currentPlayer() {
+    return state.players[state.currentPlayer];
+  }
+
+  function setStatus(text) {
+    if (ui.statusText) ui.statusText.textContent = text;
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function resourceLabel(key) {
+    const labels = {
+      innovation: "💡 Inovație",
+      equipment: "🧰 Echipamente",
+      collaboration: "🤝 Colaborare",
+      impact: "⭐ Impact"
+    };
+    return labels[key] || key;
+  }
+
+  function formatCost(bundle = {}) {
+    const entries = Object.entries(bundle).filter(([, value]) => value > 0);
+    if (!entries.length) return "gratuit";
+    return entries.map(([key, value]) => `${resourceLabel(key)} ${value}`).join(", ");
+  }
+
+  function canPay(player, cost = {}) {
+    return Object.entries(cost).every(([key, value]) => (player.resources[key] || 0) >= value);
+  }
+
+  function payCost(player, cost = {}) {
+    Object.entries(cost).forEach(([key, value]) => {
+      player.resources[key] = (player.resources[key] || 0) - value;
+    });
+  }
+
+  function addResources(player, bundle = {}) {
+    Object.entries(bundle).forEach(([key, value]) => {
+      player.resources[key] = (player.resources[key] || 0) + value;
+    });
+  }
+
+  function addProduction(player, bundle = {}) {
+    Object.entries(bundle).forEach(([key, value]) => {
+      player.production[key] = (player.production[key] || 0) + value;
+    });
+  }
+
+  function getEffectiveCost(type) {
+    const player = state ? currentPlayer() : null;
+    const base = { ...(tileTypes[type]?.cost || {}) };
+
+    if (player?.faction?.bonusType === "discount_tech" && ["hub","steam"].includes(type) && base.equipment) {
+      base.equipment = Math.max(0, base.equipment - 1);
     }
-}
-function updateLeaderboard(players) {
-    let list = document.getElementById('leaderboardList');
-    if (!list) return;
-    list.innerHTML = "";
-    Object.values(players).sort((a, b) => (b.score || 0) - (a.score || 0)).forEach((p, idx) => {
-        let li = document.createElement('li');
-        li.innerText = `${idx + 1}. ${playerClasses[p.playerClass]?.icon || '👤'} ${p.name}: ${p.score || 0} XP${p.winner ? ' 🏆' : ''}`;
-        list.appendChild(li);
-    });
-}
-function syncPlayer() {
-    localPlayer.score = clampScore(localPlayer.score);
-    localPlayer.skills = localPlayer.skills || {};
-    localPlayer.appliedEvents = localPlayer.appliedEvents || {};
-    updateHud();
-    checkSkillUnlock();
-    if (myPlayerId) playersRef.child(myPlayerId).set(localPlayer);
-    checkWinCondition();
-}
 
-// ==========================================
-// 7. EVENIMENTE GLOBALE
-// ==========================================
-function maybeTriggerGlobalEvent() {
-    if (!gameState.startedAt || gameState.status !== 'running') return;
-    const now = Date.now();
-    const last = Number(gameState.lastGlobalEventAt || gameState.startedAt || now);
-    const current = getCurrentGlobalEvent();
-    if (current) return;
-    if (now - last < globalEventIntervalMs) return;
-
-    gameStateRef.transaction(state => {
-        if (!state || state.status !== 'running') return state;
-        const sNow = Date.now();
-        const sLast = Number(state.lastGlobalEventAt || state.startedAt || sNow);
-        const active = state.globalEvent && (sNow - Number(state.globalEvent.startedAt || 0) <= Number(state.globalEvent.durationMs || globalEventDurationMs));
-        if (active || sNow - sLast < globalEventIntervalMs) return state;
-        const ev = pickRandom(globalEvents);
-        state.globalEvent = { ...ev, id: 'event_' + sNow + '_' + Math.random().toString(36).slice(2, 7), startedAt: sNow, durationMs: globalEventDurationMs };
-        state.lastGlobalEventAt = sNow;
-        if (ev.type === 'firewall') {
-            state.bossPosition = randomBetween(3, boardSize - 3);
-            state.bossHP = state.bossHP || bossMaxHP;
-            state.bossLastMoveAt = sNow;
-        }
-        return state;
-    });
-}
-
-function applyGlobalEventIfNeeded() {
-    const ev = getCurrentGlobalEvent();
-    if (!ev || !myPlayerId) return;
-    localPlayer.appliedEvents = localPlayer.appliedEvents || {};
-
-    if (!localPlayer.appliedEvents[ev.id]) {
-        playTone('event');
-        alert(`${ev.icon} EVENIMENT GLOBAL: ${ev.title} — ${ev.description}`);
-        localPlayer.appliedEvents[ev.id] = true;
-        if (ev.type === 'backup') {
-            let bonus = hasSkill('backupProtocol') ? 45 : 30;
-            localPlayer.score += bonus;
-            alert(`💾 Backup Restored: ai primit +${bonus} XP.`);
-        }
-        syncPlayer();
+    if (state?.globalEvent?.global === "europeanFunding" && ["hub", "steam"].includes(type) && base.equipment) {
+      base.equipment = Math.max(0, base.equipment - 1);
     }
-}
+    return Object.fromEntries(Object.entries(base).filter(([, value]) => value > 0));
+  }
 
-// ==========================================
-// 8. BOSS PE HARTĂ
-// ==========================================
-function maybeMoveBossOnMap() {
-    if (!gameState.startedAt || gameState.status !== 'running') return;
-    if (typeof gameState.bossPosition !== 'number') return;
-    const now = Date.now();
-    const lastMove = Number(gameState.bossLastMoveAt || 0);
-    const ev = getCurrentGlobalEvent();
-    const interval = ev && ev.type === 'firewall' ? Math.floor(bossMoveIntervalMs / 2) : bossMoveIntervalMs;
-    if (now - lastMove < interval) return;
 
-    gameStateRef.transaction(state => {
-        if (!state || state.status !== 'running') return state;
-        const sNow = Date.now();
-        const sLast = Number(state.bossLastMoveAt || 0);
-        const sEv = state.globalEvent && (sNow - Number(state.globalEvent.startedAt || 0) <= Number(state.globalEvent.durationMs || globalEventDurationMs)) ? state.globalEvent : null;
-        const sInterval = sEv && sEv.type === 'firewall' ? Math.floor(bossMoveIntervalMs / 2) : bossMoveIntervalMs;
-        if (sNow - sLast < sInterval) return state;
-        let pos = Number(state.bossPosition || randomBetween(3, boardSize - 3));
-        let step = randomBetween(-3, 3);
-        if (step === 0) step = 1;
-        let newPos = pos + step;
-        if (newPos <= 0) newPos = 1;
-        if (newPos >= boardSize) newPos = boardSize - 2;
-        if (newPos === coopGatePosition) newPos = coopGatePosition - 1;
-        state.bossPosition = newPos;
-        state.bossLastMoveAt = sNow;
-        return state;
+  function getEffectiveCardCost(card) {
+    const p = currentPlayer();
+    const base = { ...(card.cost || {}) };
+
+    if (p?.faction?.bonusType === "discount_collab" && base.collaboration) {
+      base.collaboration = Math.max(0, base.collaboration - 1);
+    }
+
+    return Object.fromEntries(Object.entries(base).filter(([, value]) => value > 0));
+  }
+
+  function produceAtTurnStart(player) {
+    const productionBundle = { ...player.production };
+    if (state.globalEvent?.global === "internetDown") {
+      productionBundle.innovation = Math.max(0, productionBundle.innovation - countOwnedTileType(player.id, "digitalRoad"));
+    }
+    addResources(player, productionBundle);
+    const bonus = calculateCityRegionBonus(player.id);
+    addResources(player, bonus);
+    return bonus;
+  }
+
+  function calculateCityRegionBonus(ownerId) {
+    const bonus = { innovation: 0, equipment: 0, collaboration: 0, impact: 0 };
+
+    cities.forEach(city => {
+      const adjacent = [
+        { x: city.x - 1, y: city.y },
+        { x: city.x + 1, y: city.y },
+        { x: city.x, y: city.y + 1 },
+        { x: city.x, y: city.y - 1 }
+      ].filter(p => inside(p.x, p.y));
+
+      const ownedAround = adjacent.filter(p => state.map[p.y][p.x]?.owner === ownerId).length;
+      if (ownedAround < 2) return;
+
+      const spec = city.specialization.toLowerCase();
+      if (spec.includes("digital") || spec.includes("hub")) bonus.innovation += 1;
+      else if (spec.includes("stem") || spec.includes("robot") || spec.includes("steam")) bonus.impact += 1;
+      else if (spec.includes("rural") || spec.includes("comunit")) bonus.collaboration += 1;
+      else if (spec.includes("formare")) bonus.equipment += 1;
+      else bonus.collaboration += 1;
     });
-}
 
-function checkBossMapEncounter() {
-    if (!myPlayerId || gameFinished || gameLocked) return;
-    if (typeof gameState.bossPosition !== 'number') return;
-    if (localPlayer.position !== gameState.bossPosition) return;
-    if (Date.now() - lastBossCatchAt < 5000) return;
-    lastBossCatchAt = Date.now();
-    launchBossCatchChallenge();
-}
+    return bonus;
+  }
 
-function launchBossCatchChallenge() {
-    resetChallengeUI();
-    playTone('boss');
-    setGameLocked(true);
-    const modal = document.getElementById('challengeModal');
-    const title = document.getElementById('challengeTitle');
-    const text = document.getElementById('challengeText');
-    const ansContainer = document.getElementById('answersContainer');
-    const qData = pickRandom(questionsDB);
 
-    title.innerText = "👾 Boss-ul te-a prins pe hartă!";
-    text.innerText = qData.q;
 
-    qData.options.forEach((opt, index) => {
-        let btn = document.createElement('button');
-        btn.classList.add('answer-btn');
-        btn.innerText = opt;
-        btn.onclick = () => {
-            if (index === qData.correct) {
-                rewardCorrect(30, "Ai evitat Boss-ul");
-                modal.classList.add('hidden');
-                setGameLocked(false);
-            } else {
-                localPlayer.score = clampScore(localPlayer.score - 40);
-                alert("❌ Boss-ul te-a lovit! -40 XP și revii cu 3 zone în urmă.");
-                localPlayer.position = Math.max(0, localPlayer.position - 3);
-                syncPlayer();
-                modal.classList.add('hidden');
-                setGameLocked(false);
+  function revealArea(cx, cy, radius = 1, triggerDiscovery = true) {
+    if (!state || !state.discovered) return;
+
+    for (let y = Math.max(0, cy - radius); y <= Math.min(GRID_SIZE - 1, cy + radius); y++) {
+      for (let x = Math.max(0, cx - radius); x <= Math.min(GRID_SIZE - 1, cx + radius); x++) {
+
+        if (!state.discovered[y][x]) {
+          state.discovered[y][x] = true;
+
+          const t = state.map[y][x];
+
+          if (triggerDiscovery && t && ["village", "rural"].includes(t.type)) {
+            if (Math.random() < 0.6) {
+              const ev = discoveryEvents[Math.floor(Math.random() * discoveryEvents.length)];
+              ev.apply(currentPlayer());
+
+              setTimeout(() => {
+                spawnFloatingText(`+${mission.reward} ⭐`, "#FFD166", window.innerWidth / 2, 120);
+          showCard({ category: "Descoperire în Ceață", icon: ev.icon, title: ev.title, text: ev.text });
+                setStatus(`${currentPlayer().name} a explorat și a găsit: ${ev.title}`);
+                renderAll();
+              }, 500);
             }
-        };
-        ansContainer.appendChild(btn);
-    });
-    modal.classList.remove('hidden');
-}
-
-// ==========================================
-// 9. ZAR ȘI EVENIMENTE PE TABLĂ
-// ==========================================
-document.getElementById('rollDiceBtn').addEventListener('click', () => {
-    if (gameLocked || gameFinished) return;
-    setGameLocked(true);
-    playTone('dice');
-
-    let rollA = randomBetween(1, 6);
-    let rollB = localPlayer.playerClass === 'speedrunner' ? randomBetween(1, 6) : null;
-    let roll = rollB ? Math.max(rollA, rollB) : rollA;
-    document.getElementById('diceResult').innerText = rollB ? `Speedrunner: 🎲 ${rollA} + 🎲 ${rollB} → alegi ${roll}` : `Zar: 🎲 ${roll}`;
-
-    localPlayer.position += roll;
-    if (localPlayer.position >= boardSize) {
-        localPlayer.position = localPlayer.position % boardSize;
-        localPlayer.score += 50;
-        alert("🔄 CICLU COMPLETAT! Harta a fost regenerată. Bonus: +50 XP.");
-        generateRandomBoard();
-    }
-    syncPlayer();
-    interceptPlayersOnSameTile();
-
-    if (localPlayer.position === coopGatePosition) { setTimeout(checkCoopGate, 350); return; }
-    if (localPlayer.position === gameState.bossPosition) { setTimeout(checkBossMapEncounter, 350); return; }
-
-    let eventType = localTileMap[localPlayer.position];
-    if (eventType && eventType !== 'empty') setTimeout(() => handleTileEvent(eventType), 350);
-    else setTimeout(() => setGameLocked(false), 350);
-});
-
-function interceptPlayersOnSameTile() {
-    for (let id in allNetworkPlayers) {
-        if (id !== myPlayerId && allNetworkPlayers[id].position === localPlayer.position && localPlayer.position !== 0) {
-            let stolenXP = randomBetween(5, 20);
-            if (hasSkill('dataLeech')) stolenXP += 10;
-            playersRef.child(id).child('score').transaction(score => clampScore((score || 100) - stolenXP));
-            localPlayer.score += stolenXP;
-            alert(`⚔️ Interceptare! Ai furat ${stolenXP} XP de la ${allNetworkPlayers[id].name}.`);
-            syncPlayer();
-            break;
+          }
         }
+      }
     }
-}
+  }
 
-function handleTileEvent(type) {
-    resetChallengeUI();
-    setGameLocked(true);
-    const currentEvent = getCurrentGlobalEvent();
 
-    if (type === 'question' || type === 'trivia') launchQuestion(type);
-    else if (type === 'attack') {
-        if (currentEvent && currentEvent.type === 'solar') {
-            alert("🌩 Solar Storm: zona de atac este dezactivată. Primești +5 XP pentru supraviețuire.");
-            localPlayer.score += 5;
-            syncPlayer();
-        } else performAttack();
-        setGameLocked(false);
+
+  function triggerConfetti(intensity = "normal") {
+    if (typeof confetti !== "function") {
+      return;
     }
-    else if (type === 'boost') {
-        playTone('boost');
-        let bonus = randomBetween(20, 45);
-        alert(`🚀 OVERCLOCK! Primești ${bonus} XP bonus.`);
-        localPlayer.score += bonus;
-        wrongAnswerStreak = 0;
-        syncPlayer();
-        setGameLocked(false);
-    }
-    else if (type === 'boss') launchBossBattle();
-    else if (type === 'voice') launchVoiceChallenge("Ai nimerit pe zona vocală. Spune parola pentru a continua.");
-    else if (type === 'minigame') {
-        let games = ['snake', 'bugs', 'memory'];
-        currentActiveMinigame = pickRandom(games);
-        launchMinigame(currentActiveMinigame);
-    }
-}
 
-function calculateWrongPenalty() {
-    let penalty = 10 * wrongAnswerStreak;
-    const currentEvent = getCurrentGlobalEvent();
-    if (currentEvent && currentEvent.type === 'virus') penalty *= 2;
-    if (localPlayer.playerClass === 'hacker') penalty = Math.ceil(penalty * 1.5);
-    if (localPlayer.playerClass === 'defender') penalty = Math.ceil(penalty * 0.5);
-    if (hasSkill('shield')) penalty = Math.max(0, penalty - 10);
-    return penalty;
-}
+    const base = intensity === "big"
+      ? { particleCount: 180, spread: 90, startVelocity: 45 }
+      : { particleCount: 80, spread: 70, startVelocity: 35 };
 
-function applyWrongPenalty(reason = "Răspuns greșit") {
-    wrongAnswerStreak++;
-    let penalty = calculateWrongPenalty();
-    localPlayer.score = clampScore(localPlayer.score - penalty);
-    playTone('loss');
-    alert(`❌ ${reason}! Penalizare progresivă: -${penalty} XP.`);
-    syncPlayer();
-    if (wrongAnswerStreak >= 4) {
-        launchVoiceChallenge("Ai acumulat 4 greșeli consecutive. Pentru deblocare trebuie să spui fraza de verificare.");
+    confetti({
+      ...base,
+      origin: { y: 0.65 }
+    });
+
+    if (intensity === "big") {
+      setTimeout(() => {
+        confetti({
+          particleCount: 120,
+          spread: 120,
+          startVelocity: 38,
+          origin: { y: 0.55 }
+        });
+      }, 350);
+    }
+  }
+
+  function spawnFloatingText(text, color, x, y) {
+    const el = document.createElement("div");
+    el.className = "floating-text";
+    el.textContent = text;
+    el.style.color = color;
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 1500);
+  }
+
+  function showCard(card) {
+    if (!state) return;
+
+    if (!card) {
+      state.currentCardDisplay = null;
+      renderCurrentCard();
+      return;
+    }
+
+    const display = {
+      category: card.category || card.type || "Card",
+      icon: card.icon || "🃏",
+      title: card.title || "Card extras",
+      text: card.text || "",
+      player: currentPlayer()?.name || "",
+      round: state.round,
+      time: new Date().toLocaleTimeString("ro-RO", { hour: "2-digit", minute: "2-digit" })
+    };
+
+    state.currentCardDisplay = display;
+    state.cardHistory.unshift(display);
+    state.cardHistory = state.cardHistory.slice(0, 6);
+    renderCurrentCard();
+  }
+
+  function renderCurrentCard() {
+    if (!ui.currentCard) return;
+    const card = state?.currentCardDisplay;
+
+    ui.currentCard.innerHTML = card ? `
+      <div class="card-type">${escapeHtml(card.category)} · ${escapeHtml(card.player)} · Runda ${escapeHtml(card.round)}</div>
+      <div class="card-title">${escapeHtml(card.icon)} ${escapeHtml(card.title)}</div>
+      <div class="card-text">${escapeHtml(card.text)}</div>
+    ` : '<div class="empty-card">Niciun card extras.</div>';
+
+    if (!ui.cardLog || !state) return;
+    ui.cardLog.innerHTML = state.cardHistory.length ? `
+      <div class="card-log-title">Ultimele carduri extrase</div>
+      ${state.cardHistory.map(item => `
+        <div class="card-log-item">
+          <span>${escapeHtml(item.icon)} ${escapeHtml(item.title)}</span>
+          <small>${escapeHtml(item.player)} · R${escapeHtml(item.round)}</small>
+        </div>
+      `).join("")}
+    ` : "";
+  }
+
+  function updateTurnInfo() {
+    if (!state) {
+      ui.turnInfo.textContent = "Inițializează jocul.";
+      return;
+    }
+
+    if (state.gameOver) {
+      ui.turnInfo.innerHTML = "<strong>Joc terminat.</strong>";
+      ui.drawTileBtn.disabled = true;
+      ui.drawActionBtn.disabled = true;
+      ui.drawCharacterBtn.disabled = true;
+      ui.drawEventBtn.disabled = true;
+      ui.endTurnBtn.disabled = true;
+      return;
+    }
+
+    ui.endTurnBtn.disabled = false;
+    const player = currentPlayer();
+
+    if (state.phase === "chooseSchool") {
+      ui.turnInfo.innerHTML = `<strong>${player.name}</strong><br>Alege o școală liberă de pe hartă.`;
+      ui.drawTileBtn.disabled = true;
+      ui.drawActionBtn.disabled = true;
+      ui.drawCharacterBtn.disabled = true;
+      ui.drawEventBtn.disabled = true;
+      return;
+    }
+
+    ui.turnInfo.innerHTML = `<strong>${player.name}</strong><br>Runda ${state.round}. 1 tile + max. 1 acțiune + max. 1 personaj.`;
+    ui.drawTileBtn.disabled = state.tileDrawnThisTurn || Boolean(state.currentTile) || Boolean(state.draftingTiles?.length);
+    ui.drawActionBtn.disabled = state.actionDrawnThisTurn || Boolean(state.pendingAction);
+    ui.drawCharacterBtn.disabled = state.characterDrawnThisTurn || Boolean(state.pendingCharacter);
+    ui.drawEventBtn.disabled = state.eventDrawnThisRound;
+  }
+
+  function updateTooltip(event) {
+    if (!state || !ui.mapTooltip || dragging) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const screenX = event.clientX - rect.left;
+    const screenY = event.clientY - rect.top;
+    const cell = screenToCell(screenX, screenY);
+
+    hoverCell = cell && inside(cell.x, cell.y) ? cell : null;
+
+    if (!hoverCell) {
+      ui.mapTooltip.style.display = "none";
+      draw();
+      return;
+    }
+
+    if (state.discovered && !state.discovered[hoverCell.y][hoverCell.x]) {
+      ui.mapTooltip.innerHTML = `<h4>☁️ Zonă Neexplorată</h4><div style="color: var(--muted)">Extinde-te în apropiere pentru a explora.</div>`;
+      ui.mapTooltip.style.display = "block";
+      ui.mapTooltip.style.left = `${event.clientX + 14}px`;
+      ui.mapTooltip.style.top = `${event.clientY + 14}px`;
+      draw();
+      return;
+    }
+
+    const tile = state.map[hoverCell.y][hoverCell.x];
+
+    if (!tile) {
+      ui.mapTooltip.style.display = "none";
+      draw();
+      return;
+    }
+
+    const def = tileTypes[tile.type];
+    const owner = tile.owner ? `Jucător ${tile.owner}` : "Nedeținut";
+
+    ui.mapTooltip.innerHTML = `
+      <h4>${def.icon} ${escapeHtml(def.label)}</h4>
+      <div>Poziție: (${hoverCell.x}, ${hoverCell.y})</div>
+      <div>Proprietar: ${escapeHtml(owner)}</div>
+      ${tile.cityName ? `<div>Oraș: ${escapeHtml(tile.cityName)}</div>` : ""}
+      ${tile.activated ? `<span class="badge">Proiect activat</span>` : ""}
+    `;
+
+    ui.mapTooltip.style.display = "block";
+    ui.mapTooltip.style.left = `${event.clientX + 14}px`;
+    ui.mapTooltip.style.top = `${event.clientY + 14}px`;
+
+    draw();
+  }
+
+
+  function getSchoolTileForPlayer(playerId) {
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const tile = state.map[y][x];
+        if (tile?.type === "school" && tile.owner === playerId && tile.isBaseSchool) {
+          return tile;
+        }
+      }
+    }
+    return null;
+  }
+
+  function openUpgradeModal() {
+    if (!isMyTurn()) return alert("Așteaptă! Nu este rândul tău.");
+    const p = currentPlayer();
+
+    if (!p || !p.school) {
+      setStatus("Alege mai întâi o școală de bază.");
+      return;
+    }
+
+    const modal = ui.upgradeModal;
+    const list = ui.upgradeList;
+
+    if (!modal || !list) {
+      setStatus("Panoul de upgrade nu este disponibil în HTML.");
+      return;
+    }
+
+    list.innerHTML = upgrades.map(u => {
+      const hasUpgrade = p.upgrades.includes(u.id);
+
+      return `
+        <div class="upgrade-item">
+          <div>
+            <strong>${u.icon} ${u.name}</strong><br>
+            <small>Producție: ${formatCost(u.prod)}</small>
+          </div>
+          <button class="btn ${hasUpgrade ? 'disabled' : 'primary'}"
+                  onclick="buyUpgrade('${u.id}')"
+                  ${hasUpgrade ? 'disabled' : ''}>
+            ${hasUpgrade ? 'Deținut' : 'Cumpără (' + formatCost(u.cost) + ')'}
+          </button>
+        </div>
+      `;
+    }).join("");
+
+    modal.style.display = "block";
+  }
+
+  window.buyUpgrade = function(upgradeId) {
+    const p = currentPlayer();
+    const u = upgrades.find(x => x.id === upgradeId);
+
+    if (!u) return;
+
+    if (canPay(p, u.cost)) {
+      payCost(p, u.cost);
+      p.upgrades.push(u.id);
+
+      Object.keys(u.prod).forEach(res => {
+        p.production[res] += u.prod[res];
+      });
+
+      const schoolTile = getSchoolTileForPlayer(p.id);
+      if (schoolTile) {
+        schoolTile.upgradeIcons = schoolTile.upgradeIcons || [];
+        schoolTile.upgradeIcons.push(u.icon);
+      }
+
+      spawnFloatingText("Upgrade Construit!", "#10ECD2", window.innerWidth / 2, window.innerHeight / 2);
+
+      if (ui.upgradeModal) ui.upgradeModal.style.display = "none";
+      renderAll();
+    } else {
+      alert("Resurse insuficiente!");
+    }
+  };
+
+  function showVictoryScreen(winner) {
+    if (!ui.endGameModal || !ui.winnerPodium || !ui.finalStats) return;
+
+    ui.endGameModal.style.display = "block";
+    triggerConfetti("big");
+
+    ui.winnerPodium.innerHTML = `
+      <h2>🥇 ${winner.player.name}</h2>
+      <p>Liderul Educației Viitorului</p>
+    `;
+
+    ui.finalStats.innerHTML = `
+      <div class="box">
+        <p>Puncte Impact: ${winner.score.total}</p>
+        <p>Facțiune: ${winner.player.faction.name}</p>
+        <p>Școli Dezvoltate: ${winner.score.developedSchools}</p>
+      </div>
+    `;
+  }
+
+  function handleCanvasClick(event) {
+    if (!isMyTurn()) return alert("Așteaptă! Nu este rândul tău.");
+    if (!state || state.gameOver) return;
+
+    const moved = Math.abs(event.clientX - dragStart.x) + Math.abs(event.clientY - dragStart.y);
+    if (moved > 8) return;
+
+    const cell = screenToCell(event.offsetX, event.offsetY);
+    if (!cell || !inside(cell.x, cell.y)) return;
+
+    state.selectedCell = cell;
+    const tile = state.map[cell.y][cell.x];
+
+    if (state.phase === "chooseSchool") {
+      chooseSchool(cell, tile);
+      renderAll();
+      return;
+    }
+
+    if (tile && tile.type === "school" && tile.owner === currentPlayer().id && state.phase === "play" && !state.currentTile && !state.pendingAction && !state.pendingCharacter) {
+      openUpgradeModal();
+      return;
+    }
+
+    if (state.pendingAction) {
+      applyPendingAction(cell, tile);
+      renderAll();
+      return;
+    }
+
+    if (state.pendingCharacter) {
+      applyPendingCharacter(cell, tile);
+      renderAll();
+      return;
+    }
+
+    if (state.currentTile) {
+      placeCurrentTile(cell, tile);
+      renderAll();
+      return;
+    }
+
+    if (tile && tile.type === "school" && !tile.owner) {
+      claimSchool(cell, tile);
+      renderAll();
+      return;
+    }
+
+    renderAll();
+  }
+
+  function chooseSchool(cell, tile) {
+    const player = currentPlayer();
+
+    if (!tile || tile.type !== "school") {
+      setStatus("Alege o celulă cu școală.");
+      return;
+    }
+
+    if (tile.owner) {
+      setStatus("Această școală este deja aleasă.");
+      return;
+    }
+
+    tile.owner = player.id;
+    tile.isBaseSchool = true;
+    player.school = { x: cell.x, y: cell.y };
+    player.controlledSchools = [{ x: cell.x, y: cell.y }];
+    player.resources.impact += 1;
+    revealArea(cell.x, cell.y, 1);
+
+    if (state.players.every(p => p.school)) {
+      state.phase = "play";
+      state.currentPlayer = 0;
+      resetTurnFlags();
+      produceAtTurnStart(currentPlayer());
+      setStatus(`Toți jucătorii au ales școala. Începe construcția. Este rândul lui ${currentPlayer().name}.`);
+      return;
+    }
+
+    advancePlayer();
+    setStatus(`${player.name} a ales școala. Urmează ${currentPlayer().name}.`);
+  }
+
+  function resetTurnFlags() {
+    state.currentTile = null;
+    state.draftingTiles = [];
+    if (ui.draftZone) ui.draftZone.style.display = "none";
+    if (ui.draftOptions) ui.draftOptions.innerHTML = "";
+    state.pendingAction = null;
+    state.pendingCharacter = null;
+    state.tileDrawnThisTurn = false;
+    state.actionDrawnThisTurn = false;
+    state.characterDrawnThisTurn = false;
+  }
+
+  function endTurn() {
+    if (!isMyTurn()) return alert("Așteaptă! Nu este rândul tău.");
+    if (!state || state.gameOver) return;
+
+    if (state.phase === "chooseSchool") {
+      setStatus("În faza de început alegerea școlii se face prin click direct pe hartă.");
+      return;
+    }
+
+    resetTurnFlags();
+    advancePlayer();
+
+    if (state.currentPlayer === 0) {
+      state.round += 1;
+      state.eventDrawnThisRound = false;
+    }
+
+    const bonus = produceAtTurnStart(currentPlayer());
+    expireGlobalEventIfNeeded();
+    checkMissions();
+    checkWinCondition();
+    setStatus(`Este rândul lui ${currentPlayer().name}. Producție primită. Bonus regional: ${formatCost(bonus)}.`);
+    renderAll();
+  }
+
+  function advancePlayer() {
+    state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
+  }
+
+  function drawTileCard() {
+    startTileDraft();
+  }
+
+  function startTileDraft() {
+    if (!isMyTurn()) return alert("Așteaptă! Nu este rândul tău.");
+    if (!state || state.phase !== "play" || state.gameOver) return;
+
+    if (state.tileDrawnThisTurn) {
+      setStatus("Ai extras deja un tile în această tură.");
+      return;
+    }
+
+    state.draftingTiles = [];
+
+    for (let i = 0; i < 3; i++) {
+      if (!state.tileDeck.length) state.tileDeck = shuffle(tileDeckTemplate);
+      state.draftingTiles.push(state.tileDeck.pop());
+    }
+
+    renderDraftZone();
+    setStatus(`${currentPlayer().name} face drafting. Alege un tile din cele 3 opțiuni.`);
+    renderAll();
+  }
+
+  function renderDraftZone() {
+    if (!ui.draftZone || !ui.draftOptions) return;
+
+    if (!state || !state.draftingTiles || state.draftingTiles.length === 0) {
+      ui.draftZone.style.display = "none";
+      ui.draftOptions.innerHTML = "";
+      return;
+    }
+
+    ui.draftZone.style.display = "block";
+    ui.draftOptions.innerHTML = state.draftingTiles.map((type, index) => {
+      const def = tileTypes[type];
+      return `
+        <button class="draft-option" type="button" data-draft-index="${index}">
+          <div class="draft-icon">${def.icon}</div>
+          <div>${escapeHtml(def.label)}</div>
+          <div class="draft-cost">${escapeHtml(formatCost(getEffectiveCost(type)))}</div>
+        </button>
+      `;
+    }).join("");
+
+    ui.draftOptions.querySelectorAll("[data-draft-index]").forEach(button => {
+      button.addEventListener("click", () => selectDraftTile(Number(button.dataset.draftIndex)));
+    });
+  }
+
+  function selectDraftTile(index) {
+    if (!state || !state.draftingTiles || state.draftingTiles.length === 0) return;
+    if (index < 0 || index >= state.draftingTiles.length) return;
+
+    const chosenType = state.draftingTiles[index];
+    const rejected = state.draftingTiles.filter((_, i) => i !== index);
+
+    state.tileDeck.unshift(...rejected);
+    state.draftingTiles = [];
+    state.currentTile = makeTile(chosenType, { owner: currentPlayer().id });
+    state.tileDrawnThisTurn = true;
+
+    if (ui.draftZone) ui.draftZone.style.display = "none";
+    if (ui.draftOptions) ui.draftOptions.innerHTML = "";
+
+    const def = tileTypes[chosenType];
+
+    showCard({
+      category: "Cartonaș tile selectat",
+      icon: def.icon,
+      title: def.label,
+      text: `Cost: ${formatCost(getEffectiveCost(chosenType))}. Producție/tură: ${formatCost(def.produces)}. Plasează-l lângă zona ta sau lângă o conexiune validă.`
+    });
+
+    setStatus(`${currentPlayer().name} a ales ${def.label}. Click pe hartă pentru plasare.`);
+    renderAll();
+  }
+
+  window.selectDraftTile = selectDraftTile;
+
+  function drawGenericCard(deckName) {
+    if (!isMyTurn()) return alert("Așteaptă! Nu este rândul tău.");
+    if (!state || state.phase !== "play" || state.gameOver) return;
+
+    if (deckName === "action" && state.actionDrawnThisTurn) return setStatus("Ai extras deja o carte de acțiune în această tură.");
+    if (deckName === "character" && state.characterDrawnThisTurn) return setStatus("Ai extras deja o carte de personaj în această tură.");
+    if (deckName === "event" && state.eventDrawnThisRound) return setStatus("Evenimentul global a fost extras deja în această rundă.");
+
+    let deck = deckName === "action" ? state.actionDeck : deckName === "character" ? state.characterDeck : state.eventDeck;
+
+    if (!deck.length) {
+      if (deckName === "action") state.actionDeck = shuffle(actionDeckTemplate);
+      if (deckName === "character") state.characterDeck = shuffle(characterDeckTemplate);
+      if (deckName === "event") state.eventDeck = shuffle(eventDeckTemplate);
+      deck = deckName === "action" ? state.actionDeck : deckName === "character" ? state.characterDeck : state.eventDeck;
+    }
+
+    const card = deck.pop();
+    showCard({ category: card.type, icon: card.icon, title: card.title, text: card.text });
+
+    if (deckName === "action") {
+      state.actionDrawnThisTurn = true;
+      if (["instantInnovation", "missionConnectivity", "schoolExpansion"].includes(card.mode)) {
+        applySimpleCardEffect(card);
+      } else {
+        state.pendingAction = card;
+        setStatus(`${currentPlayer().name} a extras ${card.title}. Click pe hartă pentru aplicare.`);
+      }
+    }
+
+    if (deckName === "character") {
+      state.characterDrawnThisTurn = true;
+      state.pendingCharacter = card;
+      setStatus(`${currentPlayer().name} a extras ${card.title}. Click pe loc valid pentru plasare.`);
+    }
+
+    if (deckName === "event") {
+      state.eventDrawnThisRound = true;
+      applyGlobalEvent(card);
+      setStatus(`Eveniment global activ: ${card.title}.`);
+    }
+
+    renderAll();
+  }
+
+  function applySimpleCardEffect(card) {
+    const player = currentPlayer();
+
+    if (card.mode === "instantInnovation") {
+      player.resources.innovation += 2;
+      setStatus(`${player.name} primește 💡 +2.`);
+    }
+
+    if (card.mode === "schoolExpansion") {
+      player.expansionTokens += 1;
+      setStatus(`${player.name} primește 1 token de extindere școlară.`);
+    }
+
+    if (card.mode === "missionConnectivity") {
+      const count = countConnectedOwnedSchools(player.id);
+      if (count >= 2) {
+        player.resources.impact += 3;
+        setStatus(`Misiune reușită: ${count} școli conectate. ⭐ +3.`);
+      } else {
+        setStatus(`Misiune nereușită: ai ${count} școală/școli conectate. Ai nevoie de minimum 2.`);
+      }
+    }
+  }
+
+  function applyGlobalEvent(card) {
+    state.globalEvent = { ...card, expiresRound: state.round };
+
+    if (card.global === "internationalPartnership") {
+      state.players.forEach(p => {
+        p.resources.innovation += 1;
+        p.resources.collaboration += 1;
+      });
+    }
+
+    if (card.global === "nationalHackathon") {
+      state.players.forEach(p => {
+        if (hasOwnedTileType(p.id, ["hub", "steam"])) p.resources.impact += 2;
+      });
+    }
+
+    if (card.global === "robotDonation") {
+      state.players.forEach(p => p.resources.equipment += 1);
+      currentPlayer().resources.equipment += 1;
+    }
+
+    if (card.global === "resistance") {
+      state.players.forEach(p => p.resources.collaboration = Math.max(0, p.resources.collaboration - 1));
+    }
+
+    if (card.global === "equipmentShortage") {
+      state.players.forEach(p => p.resources.equipment = Math.max(0, p.resources.equipment - 1));
+    }
+  }
+
+  function applyPendingAction(cell, tile) {
+    const card = state.pendingAction;
+    const player = currentPlayer();
+
+    if (!card) return false;
+    if (!tile) {
+      setStatus("Cartea trebuie aplicată pe un tile existent.");
+      return true;
+    }
+
+    if (card.mode === "activity") {
+      if (!card.target.includes(tile.type)) {
+        setStatus(`${card.title} nu poate fi aplicată pe acest tip de tile.`);
         return true;
+      }
+
+      if (tile.owner !== player.id && !isAdjacentToOwnedZone(cell, player.id)) {
+        setStatus("Activitatea trebuie aplicată pe zona proprie sau lângă o conexiune proprie.");
+        return true;
+      }
+
+      const effectiveCost = getEffectiveCardCost(card);
+      if (!canPay(player, effectiveCost)) {
+        setStatus(`Nu ai suficiente resurse. Cost: ${formatCost(effectiveCost)}.`);
+        return true;
+      }
+
+      payCost(player, effectiveCost);
+      addResources(player, card.reward);
+      tile.owner = player.id;
+      tile.activated = true;
+      tile.activityMarks = tile.activityMarks || [];
+      tile.activityMarks.push(card.mark || card.title);
+      state.pendingAction = null;
+      setStatus(`${card.title} implementată. Recompensă: ${formatCost(card.reward)}.`);
+      return true;
+    }
+
+    if (card.mode === "project") {
+      if (tile.type !== "school" || tile.owner !== player.id) {
+        setStatus("Proiectul comunitar se aplică pe o școală proprie.");
+        return true;
+      }
+
+      if (player.resources.collaboration < 1) {
+        setStatus("Nu ai suficientă colaborare. Cost: 🤝1.");
+        return true;
+      }
+
+      player.resources.collaboration -= 1;
+      const impact = state.globalEvent?.global === "lowStudentEngagement" ? 1 : 2;
+      player.resources.impact += impact;
+      tile.activated = true;
+      tile.activityMarks = tile.activityMarks || [];
+      tile.activityMarks.push("Proiect comunitar");
+      state.pendingAction = null;
+      setStatus(`Proiect implementat. ⭐ +${impact}.`);
+      return true;
+    }
+
+    if (card.mode === "blockConnection") {
+      if (!["road", "digitalRoad", "steamCorridor", "ruralRoute"].includes(tile.type)) {
+        setStatus("Problema poate fi aplicată doar pe conexiuni.");
+        return true;
+      }
+
+      tile.previousType = tile.type;
+      tile.type = "blocked";
+      tile.owner = player.id;
+      state.pendingAction = null;
+      setStatus("Conexiunea a fost blocată temporar.");
+      return true;
+    }
+
+    if (card.mode === "partnership") {
+      if (!["road", "digitalRoad", "steamCorridor", "ruralRoute", "hub"].includes(tile.type)) {
+        setStatus("Parteneriatul se aplică pe o conexiune sau pe un hub.");
+        return true;
+      }
+
+      if (!isAdjacentToOwnedZone(cell, player.id) && tile.owner !== player.id) {
+        setStatus("Parteneriatul trebuie aplicat lângă zona ta sau pe un tile propriu.");
+        return true;
+      }
+
+      player.resources.collaboration += 2;
+      player.resources.impact += 1;
+      tile.owner = player.id;
+      tile.activated = true;
+      state.pendingAction = null;
+      setStatus("Parteneriat activat. 🤝 +2 și ⭐ +1.");
+      return true;
+    }
+
+    return false;
+  }
+
+  function applyPendingCharacter(cell, tile) {
+    const card = state.pendingCharacter;
+    const player = currentPlayer();
+
+    if (!card) return false;
+    if (!tile) return setStatus("Personajul trebuie plasat pe un tile existent."), true;
+
+    if (!card.allowed.includes(tile.type)) {
+      setStatus(`${card.title} nu poate fi plasat aici.`);
+      return true;
+    }
+
+    if (tile.owner !== player.id && !isAdjacentToOwnedZone(cell, player.id)) {
+      setStatus("Poți plasa personajul doar în zona proprie sau lângă o conexiune proprie.");
+      return true;
+    }
+
+    tile.owner = player.id;
+    tile.characters = tile.characters || [];
+    tile.characters.push({ role: card.role, icon: card.icon, title: card.title, owner: player.id });
+
+    if (card.role === "teacher") {
+      player.resources.collaboration += 1;
+      player.resources.impact += 1;
+    }
+    if (card.role === "student") {
+      player.resources.impact += player.faction?.bonusType === "student_boost" ? 2 : 1;
+    }
+    if (card.role === "expert") {
+      player.resources.impact += 2;
+      player.resources.innovation += 1;
+    }
+    if (card.role === "mentor") {
+      player.resources.innovation += 1;
+      player.resources.collaboration += 1;
+    }
+
+    state.pendingCharacter = null;
+    setStatus(`${card.title} a fost plasat.`);
+    return true;
+  }
+
+  function placeCurrentTile(cell, existingTile) {
+    if (existingTile) {
+      setStatus("Această poziție este ocupată.");
+      return;
+    }
+
+    if (!isValidPlacement(cell)) {
+      setStatus("Plasare invalidă. Alege o poziție lângă zona proprie sau o conexiune validă.");
+      return;
+    }
+
+    const player = currentPlayer();
+    const tile = state.currentTile;
+    const def = tileTypes[tile.type];
+    const cost = getEffectiveCost(tile.type);
+
+    if (!canPay(player, cost)) {
+      setStatus(`Nu ai suficiente resurse. Cost: ${formatCost(cost)}.`);
+      return;
+    }
+
+    payCost(player, cost);
+    tile.owner = player.id;
+    state.map[cell.y][cell.x] = tile;
+    addProduction(player, def.produces);
+
+    applyPlacementCombo(cell, tile, player);
+    revealArea(cell.x, cell.y, 1);
+
+    state.currentTile = null;
+    setStatus(`${player.name} a construit ${def.label}.`);
+  }
+
+  function applyPlacementCombo(cell, tile, player) {
+    const neighbors = getNeighbors(cell.x, cell.y).map(n => state.map[n.y][n.x]).filter(Boolean);
+
+    if (tile.type === "digitalRoad" && neighbors.some(t => t.type === "hub")) {
+      player.resources.innovation += 1;
+      setStatus("Combo activ: Rețea Digitală + Hub Digital. 💡 +1.");
+    }
+
+    if (tile.type === "steamCorridor" && neighbors.some(t => t.type === "steam")) {
+      player.resources.impact += 1;
+      setStatus("Combo activ: Coridor STEAM + Centru STEAM. ⭐ +1.");
+    }
+
+    if (tile.type === "ruralRoute" && neighbors.some(t => ["village", "rural"].includes(t.type))) {
+      player.resources.collaboration += 1;
+      setStatus("Combo activ: Rută Rurală + comunitate. 🤝 +1.");
+    }
+  }
+
+  function canClaimSchool(cell, tile, player) {
+    if (!tile || tile.type !== "school" || tile.owner) return false;
+    if (!isAdjacentToOwnedZone(cell, player.id)) return false;
+    return player.expansionTokens > 0 || (player.resources.collaboration >= 2 && player.resources.equipment >= 1);
+  }
+
+  function claimSchool(cell, tile) {
+    const player = currentPlayer();
+
+    if (!canClaimSchool(cell, tile, player)) {
+      setStatus("Pentru extindere ai nevoie de școală conectată și cost 🤝2 + 🧰1 sau 1 token de extindere.");
+      return true;
+    }
+
+    if (player.expansionTokens > 0) player.expansionTokens -= 1;
+    else {
+      player.resources.collaboration -= 2;
+      player.resources.equipment -= 1;
+    }
+
+    tile.owner = player.id;
+    tile.isExpandedSchool = true;
+    player.controlledSchools.push({ x: cell.x, y: cell.y });
+    player.resources.impact += 2;
+    revealArea(cell.x, cell.y, 1);
+    setStatus(`${player.name} a preluat o școală nouă. ⭐ +2.`);
+    return true;
+  }
+
+  function isValidPlacement(cell) {
+    const player = currentPlayer();
+    return getNeighbors(cell.x, cell.y).some(n => {
+      const tile = state.map[n.y][n.x];
+      if (!tile || tile.type === "blocked") return false;
+      if (tile.owner === player.id) return true;
+      if (tile.type === "city" && isAdjacentToOwnedZone(n, player.id)) return true;
+      return ["road", "digitalRoad", "steamCorridor", "ruralRoute", "hub"].includes(tile.type) && isAdjacentToOwnedZone(n, player.id);
+    });
+  }
+
+  function isConnectionTile(type) {
+    return ["road", "digitalRoad", "steamCorridor", "ruralRoute", "city", "school", "hub", "steam", "university", "village", "rural"].includes(type);
+  }
+
+  function isAdjacentToOwnedZone(cell, ownerId) {
+    return getNeighbors(cell.x, cell.y).some(n => {
+      const tile = state.map[n.y][n.x];
+      return tile && tile.owner === ownerId && tile.type !== "blocked";
+    });
+  }
+
+  function getNeighbors(x, y) {
+    return [
+      { x: x - 1, y },
+      { x: x + 1, y },
+      { x, y: y - 1 },
+      { x, y: y + 1 }
+    ].filter(p => inside(p.x, p.y));
+  }
+
+  function countOwnedTileType(ownerId, type) {
+    let count = 0;
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const tile = state.map[y][x];
+        if (tile?.owner === ownerId && tile.type === type) count += 1;
+      }
+    }
+    return count;
+  }
+
+  function hasOwnedTileType(ownerId, types) {
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const tile = state.map[y][x];
+        if (tile?.owner === ownerId && types.includes(tile.type)) return true;
+      }
     }
     return false;
-}
-function rewardCorrect(points = 20, message = "Corect") {
-    wrongAnswerStreak = 0;
-    localPlayer.score += points;
-    playTone('win');
-    alert(`✅ ${message}! +${points} XP.`);
-    syncPlayer();
-}
-function getHintForQuestion(qData) {
-    const wrongIndexes = qData.options.map((_, idx) => idx).filter(idx => idx !== qData.correct);
-    const wrong = qData.options[pickRandom(wrongIndexes)];
-    return `Hint: varianta „${wrong}” NU este corectă.`;
-}
-function launchQuestion(type) {
-    activeQuestionType = type;
-    const modal = document.getElementById('challengeModal');
-    const title = document.getElementById('challengeTitle');
-    const text = document.getElementById('challengeText');
-    const ansContainer = document.getElementById('answersContainer');
-    const retryBtn = document.getElementById('retryBtn');
-    let dbPool = type === 'question' ? questionsDB : triviaDB;
-    let qData = pickRandom(dbPool);
+  }
 
-    title.innerText = type === 'question' ? "[Teorie]" : "[Cultură Generală]";
-    text.innerText = qData.q;
+  function countConnectedOwnedSchools(ownerId) {
+    const zone = getConnectedZone(ownerId);
+    let count = 0;
 
-    if (localPlayer.playerClass === 'analyst' || hasSkill('deepScan')) {
-        const hint = document.createElement('p');
-        hint.className = 'hint-box';
-        hint.innerText = '🔍 ' + getHintForQuestion(qData);
-        ansContainer.appendChild(hint);
+    for (const key of zone) {
+      const [x, y] = key.split(",").map(Number);
+      const tile = state.map[y][x];
+      if (tile?.type === "school" && tile.owner === ownerId) count += 1;
     }
 
-    qData.options.forEach((opt, index) => {
-        let btn = document.createElement('button');
-        btn.classList.add('answer-btn');
-        btn.innerText = opt;
-        btn.onclick = () => {
-            if (index === qData.correct) {
-                rewardCorrect(20, "Răspuns corect");
-                modal.classList.add('hidden');
-                setGameLocked(false);
-            } else {
-                const launchedVoice = applyWrongPenalty("Răspuns greșit");
-                if (!launchedVoice) {
-                    ansContainer.innerHTML = '';
-                    retryBtn.innerText = `Reîncearcă întrebarea. Următoarea greșeală poate costa mai mult XP`;
-                    retryBtn.style.display = 'block';
-                    retryBtn.onclick = () => launchQuestion(type);
-                }
-            }
-        };
-        ansContainer.appendChild(btn);
-    });
-    modal.classList.remove('hidden');
-}
-function performAttack() {
-    playTone('attack');
-    let opponents = Object.keys(allNetworkPlayers).filter(id => id !== myPlayerId);
-    if (opponents.length > 0) {
-        let targetId = pickRandom(opponents);
-        let stolenXP = randomBetween(10, 45);
-        if (localPlayer.playerClass === 'hacker') stolenXP = Math.ceil(stolenXP * 1.2);
-        if (hasSkill('dataLeech')) stolenXP += 10;
-        playersRef.child(targetId).child('score').transaction(score => clampScore((score || 100) - stolenXP));
-        localPlayer.score += stolenXP;
-        alert(`⚔️ Atac random reușit! Ai furat ${stolenXP} XP de la ${allNetworkPlayers[targetId].name}.`);
-    } else {
-        let bonus = randomBetween(5, 20);
-        alert(`Nu sunt alți agenți. Ai primit ${bonus} XP bonus.`);
-        localPlayer.score += bonus;
+    return count;
+  }
+
+  function getConnectedZone(ownerId) {
+    const starts = [];
+
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const tile = state.map[y][x];
+        if (tile?.owner === ownerId && isConnectionTile(tile.type)) starts.push({ x, y });
+      }
     }
-    syncPlayer();
-}
 
-// ==========================================
-// 10. SKILL TREE
-// ==========================================
-function checkSkillUnlock() {
-    if (!myPlayerId || skillChoiceOpen || gameFinished) return;
-    const currentLevel = getLevel(localPlayer.score);
-    const lastLevel = Number(localPlayer.lastSkillLevel || 1);
-    if (currentLevel > lastLevel && currentLevel >= 2) showSkillChoice(currentLevel);
-}
-function showSkillChoice(level) {
-    const available = getAvailableSkills();
-    if (!available.length) { localPlayer.lastSkillLevel = level; return; }
-    skillChoiceOpen = true;
-    resetChallengeUI();
-    setGameLocked(true);
-    const modal = document.getElementById('challengeModal');
-    const title = document.getElementById('challengeTitle');
-    const text = document.getElementById('challengeText');
-    const ansContainer = document.getElementById('answersContainer');
-    title.innerText = `🌟 Nivel ${level} atins! Alege o abilitate`;
-    text.innerText = "Alege un upgrade permanent pentru restul sesiunii.";
-    available.slice(0, 3).forEach(skill => {
-        const btn = document.createElement('button');
-        btn.classList.add('answer-btn', 'skill-choice-btn');
-        btn.innerText = `${skill.icon} ${skill.name} — ${skill.description}`;
-        btn.onclick = () => {
-            localPlayer.skills = localPlayer.skills || {};
-            localPlayer.skills[skill.id] = true;
-            localPlayer.lastSkillLevel = level;
-            alert(`✅ Ai deblocat: ${skill.name}`);
-            skillChoiceOpen = false;
-            modal.classList.add('hidden');
-            setGameLocked(false);
-            syncPlayer();
-        };
-        ansContainer.appendChild(btn);
-    });
-    modal.classList.remove('hidden');
-}
+    const visited = new Set(starts.map(s => `${s.x},${s.y}`));
+    const queue = [...starts];
 
-// ==========================================
-// 11. CO-OP GATE - SINCRONIZAT PRIN FIREBASE
-// ==========================================
-function getPlayersAtCoopGate() {
-    let playersHere = [];
-    for (let id in allNetworkPlayers) {
-        if (Number(allNetworkPlayers[id].position) === coopGatePosition) playersHere.push({ id, ...allNetworkPlayers[id] });
+    while (queue.length) {
+      const current = queue.shift();
+
+      for (const n of getNeighbors(current.x, current.y)) {
+        const key = `${n.x},${n.y}`;
+        if (visited.has(key)) continue;
+
+        const tile = state.map[n.y][n.x];
+        if (!tile || tile.type === "blocked" || !isConnectionTile(tile.type)) continue;
+        if (tile.owner !== ownerId && tile.type !== "city") continue;
+
+        visited.add(key);
+        queue.push(n);
+      }
     }
-    return playersHere;
-}
-function checkCoopGate() {
-    if (gameFinished || !myPlayerId) return;
-    const playersHere = getPlayersAtCoopGate();
-    if (playersHere.length < 2) {
-        waitingAtCoopGate = true;
-        alert("🔐 Ai ajuns la FIREWALL GATE! Așteaptă încă un agent pentru a continua.");
-        setGameLocked(true);
-        return;
-    }
-    waitingAtCoopGate = false;
-    const selected = playersHere.slice(0, 2);
-    createSharedCoopMission(selected);
-}
-function createSharedCoopMission(playersHere) {
-    const questionIndex = randomBetween(0, questionsDB.length - 1);
-    const missionId = "coop_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
-    coopGateRef.transaction(state => {
-        if (state && state.status === 'active') return state;
-        return {
-            status: 'active',
-            missionId,
-            questionIndex,
-            participantIds: playersHere.map(p => p.id),
-            participantNames: playersHere.map(p => p.name),
-            startedAt: Date.now(),
-            answeredBy: null
-        };
-    });
-}
-function listenToCoopGate() {
-    coopGateRef.on('value', snapshot => {
-        const mission = snapshot.val();
-        if (!mission || !myPlayerId) return;
-        if (mission.status === 'active' && mission.participantIds && mission.participantIds.includes(myPlayerId)) {
-            if (lastCoopMissionIdHandled !== mission.missionId) {
-                lastCoopMissionIdHandled = mission.missionId;
-                coopMissionLocalOpen = true;
-                launchSharedCoopMission(mission);
-            }
-        }
-        if ((mission.status === 'success' || mission.status === 'failed') && mission.participantIds && mission.participantIds.includes(myPlayerId)) {
-            coopMissionLocalOpen = false;
-            waitingAtCoopGate = false;
-            if (!gameFinished) setGameLocked(false);
-        }
-    });
-}
-function launchSharedCoopMission(mission) {
-    resetChallengeUI();
-    setGameLocked(true);
-    const modal = document.getElementById('challengeModal');
-    const title = document.getElementById('challengeTitle');
-    const text = document.getElementById('challengeText');
-    const ansContainer = document.getElementById('answersContainer');
-    const qData = questionsDB[mission.questionIndex] || pickRandom(questionsDB);
 
-    title.innerText = "🤝 MISIUNE CO-OP: Spargerea Firewall-ului";
-    text.innerText = `Agenți conectați: ${(mission.participantNames || []).join(' + ')}. Răspundeți corect pentru +50 XP și revenire la START.`;
+    return visited;
+  }
 
-    const p = document.createElement('p');
-    p.innerText = qData.q;
-    ansContainer.appendChild(p);
+  function expireGlobalEventIfNeeded() {
+    if (state.globalEvent && state.round > state.globalEvent.expiresRound) state.globalEvent = null;
+  }
 
-    qData.options.forEach((opt, index) => {
-        let btn = document.createElement('button');
-        btn.classList.add('answer-btn');
-        btn.innerText = opt;
-        btn.onclick = () => {
-            if (index === qData.correct) resolveCoopMission(mission, true);
-            else resolveCoopMission(mission, false);
-        };
-        ansContainer.appendChild(btn);
-    });
-    modal.classList.remove('hidden');
-}
-function resolveCoopMission(mission, success) {
-    const modal = document.getElementById('challengeModal');
-    if (success) {
-        alert("✅ Misiune co-op reușită! Agenții primesc +50 XP și revin la START.");
-        (mission.participantIds || []).forEach(id => {
-            playersRef.child(id).transaction(player => {
-                if (!player) return player;
-                player.score = clampScore((player.score || 100) + 50);
-                player.position = 0;
-                return player;
-            });
+  function calculateScore(player) {
+    let developedSchools = 0;
+    let connectedCities = new Set();
+    let finishedProjects = 0;
+    let trainedTeachers = 0;
+    let involvedStudents = 0;
+    let regionalImpact = 0;
+
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const tile = state.map[y][x];
+        if (!tile || tile.owner !== player.id) continue;
+
+        if (tile.type === "school") developedSchools += 1;
+        if (tile.cityName) connectedCities.add(tile.cityName);
+        if (tile.activated) finishedProjects += 1;
+        if (tile.activityMarks?.length) finishedProjects += tile.activityMarks.length;
+        if (["village", "rural", "ruralRoute"].includes(tile.type)) regionalImpact += 1;
+
+        tile.characters?.forEach(ch => {
+          if (["teacher", "mentor", "expert"].includes(ch.role)) trainedTeachers += 1;
+          if (ch.role === "student") involvedStudents += 1;
         });
-        if ((mission.participantIds || []).includes(myPlayerId)) {
-            localPlayer.score += 50;
-            localPlayer.position = 0;
-            syncPlayer();
-        }
-        coopGateRef.update({ status: 'success', answeredBy: myPlayerId, endedAt: Date.now() });
-        setTimeout(() => coopGateRef.remove(), 1200);
-        modal.classList.add('hidden');
-        setGameLocked(false);
-    } else {
-        const launchedVoice = applyWrongPenalty("Misiune co-op eșuată");
-        coopGateRef.update({ status: 'failed', answeredBy: myPlayerId, endedAt: Date.now() });
-        setTimeout(() => coopGateRef.remove(), 1200);
-        if (!launchedVoice) {
-            modal.classList.add('hidden');
-            setGameLocked(false);
-        }
-    }
-}
-
-// ==========================================
-// 12. BOSS BATTLE
-// ==========================================
-function calculateBossDamage() {
-    let damage = randomBetween(25, 60);
-    if (localPlayer.playerClass === 'defender') damage = Math.ceil(damage * 1.2);
-    if (hasSkill('bossSlayer')) damage += 15;
-    return damage;
-}
-function launchBossBattle() {
-    resetChallengeUI();
-    playTone('boss');
-    setGameLocked(true);
-    const modal = document.getElementById('challengeModal');
-    const title = document.getElementById('challengeTitle');
-    const text = document.getElementById('challengeText');
-    const ansContainer = document.getElementById('answersContainer');
-    let qData = pickRandom(questionsDB);
-    let currentHP = Number(gameState.bossHP || bossMaxHP);
-
-    title.innerText = `👾 BOSS BATTLE: AI CORE HP ${currentHP}/${bossMaxHP}`;
-    text.innerText = qData.q;
-
-    if (localPlayer.playerClass === 'analyst' || hasSkill('deepScan')) {
-        const hint = document.createElement('p');
-        hint.className = 'hint-box';
-        hint.innerText = '🔍 ' + getHintForQuestion(qData);
-        ansContainer.appendChild(hint);
+      }
     }
 
-    qData.options.forEach((opt, index) => {
-        let btn = document.createElement('button');
-        btn.classList.add('answer-btn');
-        btn.innerText = opt;
-        btn.onclick = () => {
-            if (index === qData.correct) {
-                let damage = calculateBossDamage();
-                rewardCorrect(damage, `Lovitură reușită. Damage: ${damage}`);
-                gameStateRef.child('bossHP').transaction(hp => Math.max(0, Number(hp || bossMaxHP) - damage), (err, committed, snap) => {
-                    const newHp = Number(snap.val() || 0);
-                    if (newHp <= 0) {
-                        alert("🏆 BOSS ÎNVINS! Bonus final +100 XP și +1 Cheie Boss. AI Core se regenerează.");
-                        localPlayer.score += 100;
-                        localPlayer.bossKeys = (localPlayer.bossKeys || 0) + 1;
-                        syncPlayer();
-                        gameStateRef.update({ bossHP: bossMaxHP, bossPosition: randomBetween(4, boardSize - 4), bossLastMoveAt: Date.now() });
-                        modal.classList.add('hidden');
-                        setGameLocked(false);
-                    } else {
-                        setTimeout(launchBossBattle, 300);
-                    }
-                });
-            } else {
-                const launchedVoice = applyWrongPenalty("Boss-ul te-a lovit");
-                if (!launchedVoice) setTimeout(launchBossBattle, 300);
-            }
-        };
-        ansContainer.appendChild(btn);
+    const connectedSchools = countConnectedOwnedSchools(player.id);
+    const zoneSize = getConnectedZone(player.id).size;
+
+    const total =
+      player.resources.impact +
+      developedSchools * 2 +
+      connectedSchools * 2 +
+      connectedCities.size * 3 +
+      finishedProjects * 3 +
+      trainedTeachers * 2 +
+      involvedStudents +
+      regionalImpact +
+      Math.floor(zoneSize / 5);
+
+    return { total, developedSchools, connectedSchools, connectedCities: connectedCities.size, finishedProjects, trainedTeachers, involvedStudents, regionalImpact, zoneSize };
+  }
+
+  function checkWinCondition() {
+    if (!state || state.gameOver) return false;
+
+    const ranking = state.players.map(player => ({ player, score: calculateScore(player) })).sort((a, b) => b.score.total - a.score.total);
+    const winnerByImpact = ranking.find(item => item.score.total >= state.targetImpact);
+    const reachedRoundLimit = state.round > state.maxRounds;
+
+    if (!winnerByImpact && !reachedRoundLimit) return false;
+
+    const winner = winnerByImpact || ranking[0];
+    state.gameOver = true;
+    setStatus(`Joc terminat! Câștigă ${winner.player.name} cu ${winner.score.total} puncte.`);
+    showVictoryScreen(winner);
+    showCard({ category: "Final de joc", icon: "🏆", title: `${winner.player.name} câștigă`, text: `Scor final: ${winner.score.total}. Școli: ${winner.score.developedSchools}, orașe: ${winner.score.connectedCities}, activități/proiecte: ${winner.score.finishedProjects}.` });
+    return true;
+  }
+
+  function renderPlayers() {
+    if (!state) {
+      ui.playersBox.textContent = "—";
+      return;
+    }
+
+    ui.playersBox.innerHTML = state.players.map((p, index) => {
+      const score = calculateScore(p);
+      const school = p.school ? `(${p.school.x}, ${p.school.y})` : "nealeasă";
+      return `
+        <div class="player-card ${index === state.currentPlayer ? "active" : ""} ${!p.school ? "waiting-school" : ""}">
+          <div class="player-name"><span class="dot" style="background:${p.color}"></span>${p.name}</div><div class="faction-badge">${p.faction.name}</div>
+          <div>Școală de bază: <strong>${school}</strong></div>
+          <div>Școli controlate: ${(p.controlledSchools || []).length} · Token extindere: ${p.expansionTokens}</div>
+          <div>Scor educațional: <strong>${score.total}</strong></div>
+          <div>Zonă conectată: ${score.zoneSize} tile-uri · Școli conectate: ${score.connectedSchools}</div>
+          <div>💡 ${p.resources.innovation} · 🧰 ${p.resources.equipment} · 🤝 ${p.resources.collaboration} · ⭐ ${p.resources.impact}</div>
+          <div class="production-line">Producție/tură: 💡${p.production.innovation} · 🧰${p.production.equipment} · 🤝${p.production.collaboration} · ⭐${p.production.impact}</div>
+          ${index === state.currentPlayer ? '<span class="badge">Tura curentă</span>' : ""}
+        </div>
+      `;
+    }).join("");
+  }
+
+  function renderScore() {
+    if (!state) {
+      ui.scoreBox.textContent = "—";
+      return;
+    }
+
+    const ranking = state.players.map(player => ({ player, score: calculateScore(player) })).sort((a, b) => b.score.total - a.score.total);
+
+    ui.scoreBox.innerHTML = `
+      <div class="win-condition">Țintă: ⭐ ${state.targetImpact} puncte sau ${state.maxRounds} runde.</div>
+      ${ranking.map((item, index) => `
+        <div class="score-row ${index === 0 ? "leader" : ""}">
+          <span><strong>${index + 1}. ${item.player.name}</strong></span>
+          <span class="score-pill">${item.score.total}</span>
+        </div>
+        <div class="score-detail">școli ${item.score.developedSchools} · orașe ${item.score.connectedCities} · activități/proiecte ${item.score.finishedProjects} · profesori ${item.score.trainedTeachers} · elevi ${item.score.involvedStudents}</div>
+      `).join("")}
+    `;
+  }
+
+  function renderGlobalEvent() {
+    if (!state?.globalEvent) {
+      ui.globalEventBox.textContent = "Niciun eveniment activ.";
+      return;
+    }
+
+    const e = state.globalEvent;
+    ui.globalEventBox.innerHTML = `
+      <div class="card-title">${e.icon} ${e.title}</div>
+      <div>${e.text}</div>
+      <div class="badge">Activ până la finalul rundei ${e.expiresRound}</div>
+    `;
+  }
+
+  function renderTileInfo() {
+    if (!state?.selectedCell) {
+      ui.tileInfo.textContent = "Nimic selectat.";
+      return;
+    }
+
+    const { x, y } = state.selectedCell;
+    const tile = state.map[y][x];
+
+    if (!tile) {
+      ui.tileInfo.innerHTML = `Poziție liberă: (${x}, ${y})`;
+      return;
+    }
+
+    const def = tileTypes[tile.type];
+    const owner = tile.owner ? `Jucător ${tile.owner}` : "—";
+
+    let html = `
+      <div class="card-title">${def.icon} ${def.label}</div>
+      <div>Poziție: (${x}, ${y})</div>
+      <div>Owner: ${owner}</div>
+      <div>Cost construire: ${formatCost(def.cost)}</div>
+      <div>Producție/tură: ${formatCost(def.produces)}</div>
+    `;
+
+    if (tile.isBaseSchool) html += `<div><span class="badge">Școală de bază</span></div>`;
+    if (tile.isExpandedSchool) html += `<div><span class="badge">Școală extinsă</span></div>`;
+    if (tile.cityName) html += `<div>Oraș: ${tile.cityName}</div>`;
+    if (tile.specialization) html += `<div>Specializare: ${tile.specialization}</div>`;
+    if (tile.bonus) html += `<div>Bonus: ${tile.bonus}</div>`;
+    if (tile.slots) html += `<div style="margin-top:8px">${tile.slots.map(s => `<div>${s}</div>`).join("")}</div>`;
+    if (tile.upgradeIcons?.length) html += `<div class="school-upgrades">${tile.upgradeIcons.map(i => `<span class="upgrade-mini">${i}</span>`).join("")}</div>`;
+    if (tile.characters?.length) html += `<div style="margin-top:8px"><strong>Personaje:</strong>${tile.characters.map(c => `<div>${c.icon} ${c.title} — Jucător ${c.owner}</div>`).join("")}</div>`;
+    if (tile.activityMarks?.length) html += `<div style="margin-top:8px"><strong>Activități:</strong>${tile.activityMarks.map(a => `<div>✅ ${a}</div>`).join("")}</div>`;
+    if (tile.activated) html += `<div style="margin-top:8px"><span class="badge">Activat prin carte</span></div>`;
+
+    ui.tileInfo.innerHTML = html;
+  }
+
+
+  function checkMissions() {
+    if (!state || state.gameOver) return;
+
+    state.activeMissions.forEach(mission => {
+      if (!mission.completedBy) {
+        const p = currentPlayer();
+
+        if (mission.check(p)) {
+          mission.completedBy = p.name;
+          p.resources.impact += mission.reward;
+
+          showCard({
+            category: "Misiune Îndeplinită!",
+            icon: "🏆",
+            title: mission.title,
+            text: `${p.name} a finalizat obiectivul și primește ⭐ +${mission.reward}.`
+          });
+
+          triggerConfetti("normal");
+          setStatus(`${p.name} a îndeplinit Obiectivul Național: ${mission.title}!`);
+        }
+      }
     });
-    modal.classList.remove('hidden');
-}
+  }
 
-// ==========================================
-// 13. VOICE CHALLENGE
-// ==========================================
-function launchVoiceChallenge(customText = "Spune parola în microfon pentru a continua.") {
-    resetChallengeUI();
-    playTone('voice');
-    setGameLocked(true);
-    const modal = document.getElementById('challengeModal');
-    const title = document.getElementById('challengeTitle');
-    const text = document.getElementById('challengeText');
-    const voiceBtn = document.getElementById('voiceChallengeBtn');
-    const voiceResult = document.getElementById('voiceResult');
-    const voicePhrases = [
-        "calculatorul este inteligent",
-        "datele circulă prin rețea",
-        "procesorul execută instrucțiuni",
-        "internetul folosește protocoale",
-        "memoria ram este volatilă"
-    ];
-    const secretPhrase = pickRandom(voicePhrases);
+  function executeBankTrade() {
+    if (!isMyTurn()) return alert("Așteaptă! Nu este rândul tău.");
+    if (!ui.bankGet || !ui.bankZone) return;
+    const p = currentPlayer();
+    const totalRes = p.resources.innovation + p.resources.equipment + p.resources.collaboration;
 
-    title.innerText = "🎙️ VERIFICARE VOCALĂ";
-    text.innerText = `${customText} Fraza: „${secretPhrase}”.`;
-    voiceBtn.style.display = "block";
-    voiceResult.innerText = "";
-    modal.classList.remove('hidden');
+    if (totalRes < 3) {
+      setStatus("Nu ai 3 resurse pentru schimb!");
+      return;
+    }
 
-    voiceBtn.onclick = () => {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            alert("Browserul nu suportă recunoaștere vocală. Folosește Google Chrome sau Microsoft Edge.");
-            document.getElementById('closeModalBtn').style.display = 'block';
+    let costToPay = p.faction?.bonusType === "bank_2_1" ? 2 : 3;
+
+    while (costToPay > 0) {
+      let maxRes = "innovation";
+
+      if (p.resources.equipment > p.resources[maxRes]) maxRes = "equipment";
+      if (p.resources.collaboration > p.resources[maxRes]) maxRes = "collaboration";
+
+      p.resources[maxRes]--;
+      costToPay--;
+    }
+
+    const getRes = ui.bankGet.value;
+    p.resources[getRes]++;
+
+    ui.bankZone.style.display = "none";
+
+    spawnFloatingText("Schimb reușit!", "#FFD166", window.innerWidth / 2, 160);
+
+    setStatus(`Schimb realizat. Ai primit 1 ${ui.bankGet.options[ui.bankGet.selectedIndex].text}.`);
+
+    checkMissions();
+    renderAll();
+  }
+
+  function renderMissions() {
+    if (!ui.missionsBox) return;
+    if (!state || !state.activeMissions) {
+      ui.missionsBox.textContent = "—";
+      return;
+    }
+
+    ui.missionsBox.innerHTML = state.activeMissions.map(m => `
+      <div class="mission-card ${m.completedBy ? 'completed' : ''}">
+        <div class="mission-reward">⭐ ${m.reward}</div>
+        <div class="mission-title">${m.title}</div>
+        <div>${m.desc}</div>
+        ${m.completedBy ? `<div style="margin-top:6px; color: var(--cyan); font-weight:bold;">Completat de: ${m.completedBy}</div>` : ''}
+      </div>
+    `).join("");
+  }
+
+
+  function renderFactionInfo() {
+    if (!ui.factionInfoBox || !state) return;
+    const p = currentPlayer();
+    if (!p || !p.faction) {
+      ui.factionInfoBox.textContent = "—";
+      return;
+    }
+
+    ui.factionInfoBox.innerHTML = `
+      <div class="faction-info-name">${escapeHtml(p.faction.name)}</div>
+      <div class="faction-info-power">${escapeHtml(p.faction.power)}</div>
+      <div>${escapeHtml(p.faction.desc)}</div>
+      <div class="badge">Jucător curent: ${escapeHtml(p.name)}</div>
+    `;
+  }
+
+  function renderAll() {
+    updateCanvasSize();
+    draw();
+    updateTurnInfo();
+    renderPlayers();
+    renderFactionInfo();
+    renderScore();
+    renderGlobalEvent();
+    renderCurrentCard();
+    renderTileInfo();
+    if (typeof renderMissions === "function") renderMissions();
+
+    if (isMyTurn()) syncToCloud();
+    renderMissions();
+  }
+
+  function updateCanvasSize() {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(300, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(300, Math.floor(rect.height * dpr));
+    canvas.style.width = `${rect.width}px`;
+    canvas.style.height = `${rect.height}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function draw() {
+    if (!state) return;
+    const rect = canvas.getBoundingClientRect();
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    ctx.save();
+    ctx.translate(camera.x, camera.y);
+    ctx.scale(camera.zoom, camera.zoom);
+    drawGrid();
+    drawConnectedZones();
+    drawTiles();
+    drawFog();
+    drawPlacementPreview();
+    drawHoverHighlight();
+    ctx.restore();
+  }
+
+
+  function drawFog() {
+    if (!state || !state.discovered) return;
+
+    ctx.save();
+
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+
+        if (!state.discovered[y][x]) {
+          const px = x * TILE_SIZE;
+          const py = y * TILE_SIZE;
+
+          ctx.fillStyle = "rgba(12,22,30,0.85)";
+          ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+
+          ctx.fillStyle = "rgba(255,255,255,0.05)";
+          ctx.font = "bold 16px Arial";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("?", px + TILE_SIZE / 2, py + TILE_SIZE / 2);
+        }
+      }
+    }
+
+    ctx.restore();
+  }
+
+  function drawHoverHighlight() {
+    if (!hoverCell || !inside(hoverCell.x, hoverCell.y)) return;
+    if (state.discovered && !state.discovered[hoverCell.y][hoverCell.x]) return;
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.16)";
+    ctx.fillRect(hoverCell.x * TILE_SIZE, hoverCell.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+    ctx.strokeStyle = "rgba(255,255,255,0.45)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(hoverCell.x * TILE_SIZE + 1, hoverCell.y * TILE_SIZE + 1, TILE_SIZE - 2, TILE_SIZE - 2);
+    ctx.restore();
+  }
+
+  function drawGrid() {
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const px = x * TILE_SIZE;
+        const py = y * TILE_SIZE;
+        ctx.fillStyle = (x + y) % 2 === 0 ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.02)";
+        ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+        ctx.strokeStyle = "rgba(255,255,255,0.10)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px, py, TILE_SIZE, TILE_SIZE);
+      }
+    }
+  }
+
+  function drawConnectedZones() {
+    state.players.forEach(player => {
+      ctx.save();
+      ctx.fillStyle = hexToRgba(player.color, 0.11);
+      getConnectedZone(player.id).forEach(key => {
+        const [x, y] = key.split(",").map(Number);
+        ctx.fillRect(x * TILE_SIZE + 2, y * TILE_SIZE + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+      });
+      ctx.restore();
+    });
+  }
+
+  function hexToRgba(hex, alpha) {
+    const clean = hex.replace("#", "");
+    const bigint = parseInt(clean, 16);
+    const r = (bigint >> 16) & 255;
+    const g = (bigint >> 8) & 255;
+    const b = bigint & 255;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function drawTiles() {
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const tile = state.map[y][x];
+        if (tile && (!state.discovered || state.discovered[y][x])) drawOneTile(x, y, tile);
+      }
+    }
+
+    state.players.forEach(p => {
+      if (p.school) drawPlayerMarker(p);
+    });
+
+    if (state.selectedCell) {
+      ctx.save();
+      ctx.strokeStyle = "#10ECD2";
+      ctx.lineWidth = 4;
+      ctx.strokeRect(state.selectedCell.x * TILE_SIZE + 2, state.selectedCell.y * TILE_SIZE + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+      ctx.restore();
+    }
+  }
+
+  function drawOneTile(x, y, tile) {
+    const def = tileTypes[tile.type];
+    const px = x * TILE_SIZE + 3;
+    const py = y * TILE_SIZE + 3;
+    const size = TILE_SIZE - 6;
+
+    ctx.save();
+    roundRect(px, py, size, size, 9);
+    ctx.fillStyle = def.color;
+    ctx.fill();
+    ctx.strokeStyle = tile.owner ? getOwnerColor(tile.owner) : "rgba(255,255,255,0.45)";
+    ctx.lineWidth = tile.owner ? 4 : 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = def.text;
+    ctx.font = "20px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(def.icon, px + size / 2, py + size / 2 - 2);
+
+    if (tile.type === "school") {
+      ctx.fillStyle = "rgba(0,0,0,0.24)";
+      for (let i = 0; i < 6; i++) {
+        ctx.beginPath();
+        ctx.arc(px + 8 + i * 5.2, py + size - 8, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    if (tile.isBaseSchool || tile.isExpandedSchool) {
+      ctx.fillStyle = tile.isBaseSchool ? "rgba(16,236,210,0.95)" : "rgba(255,209,102,0.95)";
+      ctx.font = "bold 9px Arial";
+      ctx.fillText(tile.isBaseSchool ? "BASE" : "EXT", px + size / 2, py + 8);
+    }
+
+    if (tile.activated) {
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.font = "bold 10px Arial";
+      ctx.fillText("✓", px + size - 8, py + 9);
+    }
+
+    if (tile.upgradeIcons?.length) {
+      ctx.font = "10px Arial";
+      tile.upgradeIcons.slice(0,3).forEach((icon, idx) => {
+        ctx.fillText(icon, px + 10 + idx * 10, py + size - 8);
+      });
+    }
+
+    if (tile.characters?.length) {
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.beginPath();
+      ctx.arc(px + 9, py + 9, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = "11px Arial";
+      ctx.fillText(tile.characters[0].icon, px + 9, py + 10);
+    }
+
+    ctx.restore();
+  }
+
+  function drawPlayerMarker(player) {
+    const x = player.school.x * TILE_SIZE + TILE_SIZE - 9;
+    const y = player.school.y * TILE_SIZE + 9;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, 8, 0, Math.PI * 2);
+    ctx.fillStyle = player.color;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#111";
+    ctx.stroke();
+    ctx.fillStyle = "#111";
+    ctx.font = "bold 9px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(player.id, x, y + 0.5);
+    ctx.restore();
+  }
+
+  function drawPlacementPreview() {
+    if (!state.currentTile || state.phase !== "play") return;
+
+    ctx.save();
+    ctx.fillStyle = "rgba(16,236,210,0.13)";
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        if (!state.map[y][x] && isValidPlacement({ x, y })) {
+          ctx.fillRect(x * TILE_SIZE + 4, y * TILE_SIZE + 4, TILE_SIZE - 8, TILE_SIZE - 8);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  function getOwnerColor(ownerId) {
+    return state.players.find(p => p.id === ownerId)?.color || "rgba(255,255,255,0.45)";
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function screenToCell(screenX, screenY) {
+    return {
+      x: Math.floor((screenX - camera.x) / camera.zoom / TILE_SIZE),
+      y: Math.floor((screenY - camera.y) / camera.zoom / TILE_SIZE)
+    };
+  }
+
+  function centerMap() {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const mapW = GRID_SIZE * TILE_SIZE;
+    const mapH = GRID_SIZE * TILE_SIZE;
+    camera.zoom = Math.min(rect.width / mapW, rect.height / mapH) * 0.92;
+    camera.zoom = Math.max(0.45, Math.min(1.1, camera.zoom));
+    camera.x = (rect.width - mapW * camera.zoom) / 2;
+    camera.y = (rect.height - mapH * camera.zoom) / 2;
+    draw();
+  }
+
+  function saveGame() {
+    if (!state) return;
+    localStorage.setItem("clasaViitoruluiRebuild", JSON.stringify(state));
+    setStatus("Jocul a fost salvat local.");
+  }
+
+  function normalizeLoadedState() {
+    state.players.forEach(p => {
+      p.controlledSchools = p.controlledSchools || (p.school ? [p.school] : []);
+      p.expansionTokens = p.expansionTokens || 0;
+      p.faction = p.faction || factions[(p.id - 1) % factions.length];
+      p.upgrades = p.upgrades || [];
+      p.resources = { innovation: 0, equipment: 0, collaboration: 0, impact: 0, ...(p.resources || {}) };
+      p.production = { innovation: 1, equipment: 1, collaboration: 1, impact: 0, ...(p.production || {}) };
+    });
+
+    state.cardHistory = state.cardHistory || [];
+    state.currentCardDisplay = state.currentCardDisplay || null;
+    state.pendingAction = state.pendingAction || null;
+    state.pendingCharacter = state.pendingCharacter || null;
+    state.tileDeck = state.tileDeck?.length ? state.tileDeck : shuffle(tileDeckTemplate);
+    state.actionDeck = state.actionDeck?.length ? state.actionDeck : shuffle(actionDeckTemplate);
+    state.characterDeck = state.characterDeck?.length ? state.characterDeck : shuffle(characterDeckTemplate);
+    state.eventDeck = state.eventDeck?.length ? state.eventDeck : shuffle(eventDeckTemplate);
+    state.activeMissions = state.activeMissions || shuffle([...publicMissionsDatabase]).slice(0, 3).map(m => ({ ...m, completedBy: null }));
+    state.discovered = state.discovered || Array.from({ length: GRID_SIZE }, () => Array.from({ length: GRID_SIZE }, () => true));
+  }
+
+  function loadGame() {
+    const raw = localStorage.getItem("clasaViitoruluiRebuild");
+    if (!raw) return setStatus("Nu există joc salvat.");
+
+    try {
+      state = JSON.parse(raw);
+      normalizeLoadedState();
+      setStatus("Jocul salvat a fost încărcat.");
+      renderAll();
+    } catch (error) {
+      console.error(error);
+      setStatus("Eroare la încărcarea jocului.");
+    }
+  }
+
+  function resetGame() {
+    localStorage.removeItem("clasaViitoruluiRebuild");
+    newGame();
+  }
+
+  function bindEvents() {
+
+    const multiplayerStartBtn = document.getElementById("startGameBtn");
+    if (multiplayerStartBtn) {
+      multiplayerStartBtn.addEventListener("click", () => {
+        const startScreen = document.getElementById("startScreen");
+        if (!startScreen) return;
+
+        startScreen.style.transition = "opacity 0.5s ease";
+        startScreen.style.opacity = "0";
+
+        setTimeout(() => {
+          startScreen.style.display = "none";
+          triggerConfetti("normal");
+        }, 500);
+      });
+    }
+
+
+
+    const createRoomBtn = document.getElementById("createRoomBtn");
+    if (createRoomBtn) {
+      createRoomBtn.addEventListener("click", () => {
+        roomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
+
+        localPlayerId = 1;
+        isMultiplayer = true;
+
+        document.getElementById("lobbyScreen").style.display = "none";
+
+        newGame();
+
+        if (db) {
+          db.ref("rooms/" + roomCode + "/joinedPlayers").set(1);
+        }
+
+        syncToCloud();
+        listenToCloud();
+
+        alert("Camera creată! Codul este: " + roomCode);
+      });
+    }
+
+    const joinRoomBtn = document.getElementById("joinRoomBtn");
+    if (joinRoomBtn) {
+      joinRoomBtn.addEventListener("click", () => {
+
+        const code = document.getElementById("roomCodeInput")
+          .value
+          .toUpperCase();
+
+        if (code.length !== 4) {
+          return alert("Cod invalid!");
+        }
+
+        const status = document.getElementById("lobbyStatus");
+        if (status) status.textContent = "Se conectează...";
+
+        if (!db) {
+          return alert("Firebase indisponibil.");
+        }
+
+        db.ref("rooms/" + code).once("value", snapshot => {
+
+          if (!snapshot.exists() || !snapshot.val().state) {
+            if (status) status.textContent = "Camera nu a fost găsită!";
             return;
-        }
-        const recognition = new SpeechRecognition();
-        recognition.lang = "ro-RO";
-        recognition.interimResults = false;
-        recognition.maxAlternatives = 1;
-        recognition.start();
-        voiceResult.innerText = "Ascult...";
+          }
 
-        recognition.onresult = event => {
-            let spokenText = event.results[0][0].transcript.toLowerCase().trim();
-            voiceResult.innerText = `Ai spus: „${spokenText}”`;
-            if (spokenText.includes(secretPhrase)) {
-                alert("✅ Verificare vocală reușită! +15 XP și greșelile consecutive se resetează.");
-                wrongAnswerStreak = 0;
-                localPlayer.score += 15;
-                syncPlayer();
-                modal.classList.add('hidden');
-                setGameLocked(false);
-            } else {
-                alert("❌ Fraza nu a fost recunoscută corect. -30 XP.");
-                localPlayer.score = clampScore(localPlayer.score - 30);
-                syncPlayer();
-            }
-        };
-        recognition.onerror = () => { voiceResult.innerText = "Microfonul nu a putut fi folosit. Verifică permisiunile browserului."; };
-    };
-}
+          roomCode = code;
+          isMultiplayer = true;
 
-// ==========================================
-// 14. MINI-JOCURI
-// ==========================================
-function launchMinigame(gameType) {
-    resetChallengeUI();
-    setGameLocked(true);
-    const modal = document.getElementById('challengeModal');
-    const title = document.getElementById('challengeTitle');
-    const text = document.getElementById('challengeText');
-    const area = document.getElementById('miniGameArea');
-    area.style.display = 'block';
-    modal.classList.remove('hidden');
+          const data = snapshot.val();
 
-    if (gameType === 'snake') { title.innerText = "⚠️ SYSTEM CRASH"; text.innerText = "Strânge 10 puncte la Snake pentru a debloca!"; startSnakeGame(); }
-    else if (gameType === 'bugs') { title.innerText = "🐞 VÂNĂTOAREA DE ERORI"; text.innerText = "Zdrobește 10 erori în 15 secunde!"; startBugGame(); }
-    else if (gameType === 'memory') { title.innerText = "🧠 CELULA DE MEMORIE"; text.innerText = "Găsește toate perechile!"; startMemoryGame(); }
-}
-function minigameWin() { rewardCorrect(25, "Mini-joc reușit"); document.getElementById('challengeModal').classList.add('hidden'); setGameLocked(false); }
-function minigameLoss() {
-    const launchedVoice = applyWrongPenalty("Eșec critic la mini-joc");
-    document.getElementById('miniGameCanvas').style.display = 'none';
-    document.getElementById('bugGameContainer').style.display = 'none';
-    document.getElementById('memoryGameContainer').style.display = 'none';
-    if (!launchedVoice) {
-        const retryBtn = document.getElementById('retryBtn');
-        retryBtn.innerText = `Reîncearcă mini-jocul. Următoarea greșeală poate costa mai mult XP`;
-        retryBtn.style.display = 'block';
-        retryBtn.onclick = () => launchMinigame(currentActiveMinigame);
+          localPlayerId = (data.joinedPlayers || 1) + 1;
+
+          db.ref("rooms/" + roomCode + "/joinedPlayers")
+            .set(localPlayerId);
+
+          document.getElementById("lobbyScreen").style.display = "none";
+
+          listenToCloud();
+
+          alert("Te-ai conectat! Ești Jucătorul " + localPlayerId);
+        });
+      });
     }
-}
 
-let snakeInterval;
-let snakeKeyHandler;
-function startSnakeGame() {
-    const canvas = document.getElementById('miniGameCanvas');
-    const ctx = canvas.getContext('2d');
-    canvas.style.display = "block";
-    let snake = [{x: 10, y: 10}];
-    let food = {x: 15, y: 15};
-    let dx = 1, dy = 0, score = 0, box = 15;
-    if(snakeKeyHandler) document.removeEventListener('keydown', snakeKeyHandler);
-    snakeKeyHandler = (e) => {
-        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) e.preventDefault();
-        if (e.key === "ArrowUp" && dy === 0) { dx = 0; dy = -1; }
-        if (e.key === "ArrowDown" && dy === 0) { dx = 0; dy = 1; }
-        if (e.key === "ArrowLeft" && dx === 0) { dx = -1; dy = 0; }
-        if (e.key === "ArrowRight" && dx === 0) { dx = 1; dy = 0; }
-    };
-    document.addEventListener('keydown', snakeKeyHandler);
-    if(snakeInterval) clearInterval(snakeInterval);
-    snakeInterval = setInterval(() => {
-        let head = {x: snake[0].x + dx, y: snake[0].y + dy};
-        if (head.x < 0 || head.x >= 20 || head.y < 0 || head.y >= 20 || snake.some(s => s.x === head.x && s.y === head.y)) {
-            clearInterval(snakeInterval); document.removeEventListener('keydown', snakeKeyHandler); minigameLoss(); return;
-        }
-        snake.unshift(head);
-        if (head.x === food.x && head.y === food.y) {
-            score++;
-            food = {x: Math.floor(Math.random() * 20), y: Math.floor(Math.random() * 20)};
-            if (score >= 10) { clearInterval(snakeInterval); document.removeEventListener('keydown', snakeKeyHandler); minigameWin(); }
-        } else snake.pop();
-        ctx.fillStyle = "black"; ctx.fillRect(0, 0, 300, 300);
-        ctx.fillStyle = "red"; ctx.fillRect(food.x * box, food.y * box, box, box);
-        ctx.fillStyle = "#00ffcc"; snake.forEach(s => ctx.fillRect(s.x * box, s.y * box, box, box));
-    }, 120);
-}
+    ui.newGameBtn.addEventListener("click", newGame);
+    ui.drawTileBtn.addEventListener("click", startTileDraft);
+    ui.drawActionBtn.addEventListener("click", () => drawGenericCard("action"));
+    ui.drawCharacterBtn.addEventListener("click", () => drawGenericCard("character"));
+    ui.drawEventBtn.addEventListener("click", () => drawGenericCard("event"));
+    ui.endTurnBtn.addEventListener("click", endTurn);
+    ui.saveBtn.addEventListener("click", saveGame);
+    ui.loadBtn.addEventListener("click", loadGame);
+    ui.resetBtn.addEventListener("click", resetGame);
+    ui.zoomInBtn.addEventListener("click", () => { camera.zoom = Math.min(2, camera.zoom * 1.15); draw(); });
+    ui.zoomOutBtn.addEventListener("click", () => { camera.zoom = Math.max(0.35, camera.zoom / 1.15); draw(); });
+    ui.centerBtn.addEventListener("click", centerMap);
 
-let bugSpawnTimer;
-let bugCountdown;
-function startBugGame() {
-    const container = document.getElementById('bugGameContainer');
-    const stats = document.getElementById('miniGameStats');
-    container.style.display = "block";
-    stats.style.display = "block";
-    container.innerHTML = '';
-    let score = 0, timeLeft = 15;
-    stats.innerText = `Timp: ${timeLeft}s | Erori: ${score}/10`;
-    if(bugCountdown) clearInterval(bugCountdown);
-    bugCountdown = setInterval(() => {
-        timeLeft--;
-        stats.innerText = `Timp: ${timeLeft}s | Erori: ${score}/10`;
-        if (timeLeft <= 0) { clearInterval(bugCountdown); clearTimeout(bugSpawnTimer); score >= 10 ? minigameWin() : minigameLoss(); }
-    }, 1000);
-    function spawnBug() {
-        if(timeLeft <= 0) return;
-        let bug = document.createElement('div');
-        bug.className = 'bug-icon';
-        bug.innerText = ['🐞','🐛','🦠'][Math.floor(Math.random()*3)];
-        bug.style.top = Math.random() * 250 + 'px';
-        bug.style.left = Math.random() * 250 + 'px';
-        bug.onmousedown = () => {
-            score++; stats.innerText = `Timp: ${timeLeft}s | Erori: ${score}/10`; bug.remove();
-            if (score >= 10) { clearInterval(bugCountdown); clearTimeout(bugSpawnTimer); minigameWin(); }
-        };
-        container.appendChild(bug);
-        setTimeout(() => { if(bug.parentNode) bug.remove(); }, 1200);
-        bugSpawnTimer = setTimeout(spawnBug, 700);
+    if (ui.openBankBtn && ui.bankZone) {
+      ui.openBankBtn.addEventListener("click", () => {
+        ui.bankZone.style.display = ui.bankZone.style.display === "none" ? "block" : "none";
+      });
     }
-    spawnBug();
-}
 
-function startMemoryGame() {
-    const container = document.getElementById('memoryGameContainer');
-    container.style.display = "grid";
-    container.innerHTML = '';
-    const symbols = ['ROM', 'RAM', 'CPU', 'LAN'];
-    let cardsData = [...symbols, ...symbols].sort(() => Math.random() - 0.5);
-    let hasFlippedCard = false, lockBoard = false, firstCard, secondCard, matchedPairs = 0;
-    cardsData.forEach(symbol => {
-        let card = document.createElement('div');
-        card.classList.add('memory-card');
-        card.dataset.symbol = symbol;
-        card.innerHTML = `<div class="front-face">${symbol}</div><div class="back-face">?</div>`;
-        card.onclick = function() {
-            if (lockBoard || this === firstCard || this.classList.contains('flip')) return;
-            this.classList.add('flip');
-            if (!hasFlippedCard) { hasFlippedCard = true; firstCard = this; return; }
-            secondCard = this; lockBoard = true;
-            if (firstCard.dataset.symbol === secondCard.dataset.symbol) {
-                matchedPairs++; [hasFlippedCard, lockBoard, firstCard, secondCard] = [false, false, null, null];
-                if (matchedPairs === 4) setTimeout(minigameWin, 500);
-            } else {
-                setTimeout(() => {
-                    firstCard.classList.remove('flip'); secondCard.classList.remove('flip');
-                    [hasFlippedCard, lockBoard, firstCard, secondCard] = [false, false, null, null];
-                }, 800);
-            }
-        };
-        container.appendChild(card);
+    if (ui.openUpgradeBtn) {
+      ui.openUpgradeBtn.addEventListener("click", openUpgradeModal);
+    }
+
+    if (ui.execBankBtn) {
+      ui.execBankBtn.addEventListener("click", executeBankTrade);
+    }
+
+    if (ui.closeUpgradeModal) {
+      ui.closeUpgradeModal.addEventListener("click", () => {
+        if (ui.upgradeModal) ui.upgradeModal.style.display = "none";
+      });
+    }
+
+    window.addEventListener("click", (event) => {
+      if (event.target === ui.upgradeModal) ui.upgradeModal.style.display = "none";
     });
-}
 
-// ==========================================
-// 15. FINAL JOC ȘI REGULI
-// ==========================================
-function checkWinCondition() {
-    if (gameFinished || !myPlayerId) return;
-    if (localPlayer.score >= winningScore && !canFastWin()) {
-        if (!targetNoticeShown) {
-            targetNoticeShown = true;
-            alert(`Ai atins ${winningScore} XP, dar finalul rapid se activează doar după minutul 20. Păstrează avantajul!`);
+    canvas.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      dragging = true;
+      dragStart = { x: event.clientX, y: event.clientY };
+      cameraStart = { x: camera.x, y: camera.y };
+    });
+
+
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      const worldX = (mouseX - camera.x) / camera.zoom;
+      const worldY = (mouseY - camera.y) / camera.zoom;
+
+      const zoomFactor = 1.15;
+      let newZoom = camera.zoom;
+
+      if (e.deltaY < 0) {
+        newZoom = Math.min(2.5, camera.zoom * zoomFactor);
+      } else {
+        newZoom = Math.max(0.35, camera.zoom / zoomFactor);
+      }
+
+      camera.zoom = newZoom;
+      camera.x = mouseX - worldX * camera.zoom;
+      camera.y = mouseY - worldY * camera.zoom;
+
+      draw();
+      updateTooltip(e);
+    }, { passive: false });
+
+    canvas.addEventListener("click", handleCanvasClick);
+
+    window.addEventListener("mousemove", (event) => {
+      if (dragging) {
+        const dx = event.clientX - dragStart.x;
+        const dy = event.clientY - dragStart.y;
+        if (Math.abs(dx) + Math.abs(dy) > 3) {
+          camera.x = cameraStart.x + dx;
+          camera.y = cameraStart.y + dy;
+          draw();
         }
-        return;
-    }
-    if (localPlayer.score >= winningScore && canFastWin() && (localPlayer.bossKeys || 0) >= 1) {
-        gameFinished = true;
-        localPlayer.winner = true;
-        playersRef.child(myPlayerId).update({ winner: true, score: localPlayer.score, bossKeys: localPlayer.bossKeys || 0 });
-        setGameLocked(true);
-        finishGameByFastWin();
-    }
-}
-function announceExternalWinner(winner) {
-    gameFinished = true;
-    setGameLocked(true);
-    showEndScreen(`🏆 Joc încheiat! ${winner.name} a câștigat cu ${winner.score} XP.`);
-}
-function showEndScreen(message) {
-    resetChallengeUI();
-    document.getElementById('challengeTitle').innerText = "Final de joc";
-    document.getElementById('challengeText').innerText = message;
-    document.getElementById('closeModalBtn').style.display = 'block';
-    document.getElementById('challengeModal').classList.remove('hidden');
-}
-function showRules() {
-    resetChallengeUI();
-    document.getElementById('challengeTitle').innerText = "Reguli rapide";
-    document.getElementById('challengeText').innerText = "Durata standard este 30 minute. Alege o clasă: Hacker, Defender, Analyst sau Speedrunner. La niveluri noi alegi abilități permanente. Evenimentele globale apar la fiecare 3 minute: Solar Storm, Virus Outbreak, Backup Restored sau Firewall Collapse. Boss-ul este vizibil pe hartă, se mișcă și te poate prinde. Victorie rapidă este posibilă doar după minutul 20, cu minimum " + winningScore + " XP și cel puțin o Cheie Boss.";
-    document.getElementById('closeModalBtn').style.display = 'block';
-    document.getElementById('challengeModal').classList.remove('hidden');
-    setGameLocked(true);
-}
+      } else {
+        updateTooltip(event);
+      }
+    });
 
-updateHud();
+    window.addEventListener("mouseup", () => {
+      dragging = false;
+    });
+
+    canvas.addEventListener("mouseleave", () => {
+      hoverCell = null;
+      if (ui.mapTooltip) ui.mapTooltip.style.display = "none";
+      draw();
+    });
+
+    canvas.addEventListener("touchstart", (event) => {
+      if (event.touches.length !== 1) return;
+      dragging = true;
+      dragStart = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+      cameraStart = { x: camera.x, y: camera.y };
+    }, { passive: false });
+
+    window.addEventListener("touchmove", (event) => {
+      if (!dragging || event.touches.length !== 1) return;
+      event.preventDefault();
+      const dx = event.touches[0].clientX - dragStart.x;
+      const dy = event.touches[0].clientY - dragStart.y;
+      camera.x = cameraStart.x + dx;
+      camera.y = cameraStart.y + dy;
+      draw();
+    }, { passive: false });
+
+    window.addEventListener("touchend", () => {
+      dragging = false;
+      hoverCell = null;
+      if (ui.mapTooltip) ui.mapTooltip.style.display = "none";
+      draw();
+    });
+
+    window.addEventListener("resize", renderAll);
+  }
+
+
+  function ensureModalDom() {
+    if (!document.getElementById("upgradeModal")) {
+      document.body.insertAdjacentHTML("beforeend", `
+        <div id="upgradeModal" class="modal">
+          <div class="modal-content">
+            <span id="closeUpgradeModal" class="close-modal">&times;</span>
+            <h2>🏫 Dezvoltare Școală de Bază</h2>
+            <p>Investește resurse pentru a crește producția permanentă a școlii tale.</p>
+            <div id="upgradeList" class="upgrade-grid"></div>
+          </div>
+        </div>
+      `);
+    }
+
+    if (!document.getElementById("endGameModal")) {
+      document.body.insertAdjacentHTML("beforeend", `
+        <div id="endGameModal" class="modal">
+          <div class="modal-content victory-content">
+            <h1 id="victoryTitle">🏆 VICTORIE!</h1>
+            <div id="winnerPodium"></div>
+            <div id="finalStats"></div>
+            <button onclick="location.reload()" class="btn primary full">Joc Nou</button>
+          </div>
+        </div>
+      `);
+    }
+
+    ui.upgradeModal = document.getElementById("upgradeModal");
+    ui.closeUpgradeModal = document.getElementById("closeUpgradeModal");
+    ui.upgradeList = document.getElementById("upgradeList");
+    ui.endGameModal = document.getElementById("endGameModal");
+    ui.winnerPodium = document.getElementById("winnerPodium");
+    ui.finalStats = document.getElementById("finalStats");
+  }
+
+  function boot() {
+    ensureModalDom();
+    initPlayerSelect();
+    bindEvents();
+    newGame();
+    setStatus("Motorul jocului este încărcat. Alege școlile pentru jucători.");
+  }
+
+  boot();
+})();

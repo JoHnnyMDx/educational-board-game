@@ -1,131 +1,224 @@
 <!DOCTYPE html>
 <html lang="ro">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Digital Heist Academy - Live Arena V4</title>
-    <link rel="stylesheet" href="style.css">
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clasa Viitorului — Rebuild Faza 1</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-    <div id="loginScreen" class="modal">
-        <div class="modal-content login-card wide-login">
-            <p class="eyebrow">Digital Heist Academy</p>
-            <h2>Autentificare Sistem</h2>
-            <p class="muted">Intră în arena live, alege clasa agentului și luptă împotriva AI Core.</p>
+<div id="startScreen" class="start-overlay">
+  <div class="start-content">
+    <h1>Clasa Viitorului — Rebuild</h1>
+    <p class="start-subtitle">Transformă educația, conectează comunități și inovează viitorul.</p>
 
-            <input type="text" id="playerNameInput" placeholder="Numele tău (ex. Ion Popescu)" maxlength="24" autocomplete="off">
+    <div class="start-grid">
+      <div class="start-section">
+        <h3>📜 Regulile Jocului</h3>
+        <ul>
+          <li><strong>Obiectiv:</strong> Fii primul care atinge 50 de puncte de Impact (⭐) sau ai cel mai mare scor după 20 de runde.</li>
+          <li><strong>Tura ta:</strong> Extragi 3 tile-uri și alegi unul (Drafting), apoi poți juca o Carte Acțiune și una de Personaj.</li>
+          <li><strong>Explorare:</strong> Dezvăluie „Ceața Războiului” construind drumuri spre sate pentru a găsi resurse ascunse.</li>
+          <li><strong>Evoluție:</strong> Fă click pe școala ta de bază pentru a cumpăra upgrade-uri permanente.</li>
+        </ul>
+      </div>
 
-            <h3 class="class-title">Alege clasa jucătorului</h3>
-            <div class="class-picker">
-                <label class="class-card">
-                    <input type="radio" name="playerClass" value="hacker" checked>
-                    <span class="class-icon">💻</span>
-                    <strong>Hacker</strong>
-                    <small>+20% XP la atac, dar pierde mai mult la quiz greșit.</small>
-                </label>
-                <label class="class-card">
-                    <input type="radio" name="playerClass" value="defender">
-                    <span class="class-icon">🛡️</span>
-                    <strong>Defender</strong>
-                    <small>Pierde jumătate XP la greșeli și are bonus la boss.</small>
-                </label>
-                <label class="class-card">
-                    <input type="radio" name="playerClass" value="analyst">
-                    <span class="class-icon">🔍</span>
-                    <strong>Analyst</strong>
-                    <small>Primește hint la întrebări.</small>
-                </label>
-                <label class="class-card">
-                    <input type="radio" name="playerClass" value="speedrunner">
-                    <span class="class-icon">⚡</span>
-                    <strong>Speedrunner</strong>
-                    <small>Aruncă 2 zaruri și păstrează cel mai mare.</small>
-                </label>
-            </div>
-
-            <button id="joinGameBtn" class="answer-btn primary-action">Conectare la Rețea</button>
+      <div class="start-section">
+        <h3>🎭 Facțiuni și Avantaje</h3>
+        <div class="faction-info-list">
+          <div class="f-item"><strong>ONG-ul Edu:</strong> 🤝 Colaborare Extra (-1 cost la activități).</div>
+          <div class="f-item"><strong>Ministerul Inovației:</strong> 🧰 Buget Tech (-1 cost la Hub/STEAM).</div>
+          <div class="f-item"><strong>Consiliul Elevilor:</strong> 👩‍🎓 Vocea Tinerilor (+2 ⭐ Impact pentru Elevi).</div>
+          <div class="f-item"><strong>Antreprenorii:</strong> 🏦 Investiții Rapide (Schimb la Bancă 2:1).</div>
         </div>
+      </div>
     </div>
 
-    <main id="gameUI" class="app-shell" style="display:none;">
-        <section class="hud glass-panel">
-            <div>
-                <p class="eyebrow">NeoCity Live Network</p>
-                <h1>Digital Heist Academy</h1>
-                <p class="muted">Durată standard: <strong>30 minute</strong>. Scor țintă: <strong><span id="winningScoreLabel">1200</span> XP</strong>.</p>
-            </div>
-
-            <div class="session-row">
-                <div class="timer-card">
-                    <span>Timp rămas</span>
-                    <strong id="sessionTimerLabel">30:00</strong>
-                </div>
-                <div class="progress-wrap">
-                    <div id="sessionProgressFill" class="progress-fill"></div>
-                </div>
-                <div class="timer-card small-timer"><span id="fastWinLabel">Victorie rapidă după 20:00</span></div>
-            </div>
-
-            <div class="stats-grid extended-stats">
-                <div class="stat-card"><span>Agent</span><strong id="displayName">---</strong></div>
-                <div class="stat-card"><span>Clasă</span><strong id="playerClassLabel">---</strong></div>
-                <div class="stat-card"><span>Energie</span><strong><span id="playerScore">100</span> XP</strong></div>
-                <div class="stat-card"><span>Nivel</span><strong id="playerLevel">1</strong></div>
-                <div class="stat-card"><span>Fază</span><strong id="missionPhaseLabel">Nivel 1: Recrut</strong></div>
-                <div class="stat-card"><span>Greșeli</span><strong id="wrongStreakLabel">0</strong></div>
-                <div class="stat-card"><span>Chei Boss</span><strong id="bossKeysLabel">0</strong></div>
-                <div class="stat-card boss-stat"><span>AI Core Boss</span><strong><span id="bossHpLabel">300</span>/300 HP</strong></div>
-                <div class="stat-card boss-stat"><span>Boss pe hartă</span><strong id="bossMapLabel">---</strong></div>
-                <div id="globalEventCard" class="stat-card event-stat"><span>Eveniment global</span><strong id="globalEventLabel">Niciun eveniment activ</strong></div>
-            </div>
-
-            <div class="skill-panel glass-panel-lite">
-                <span>Abilități deblocate:</span>
-                <strong id="skillsLabel">Nicio abilitate</strong>
-            </div>
-
-            <div class="actions-row">
-                <button id="rollDiceBtn">Aruncă Zarul 🎲</button>
-                <button id="rulesBtn" class="secondary-btn">Reguli rapide</button>
-                <button id="resetArenaBtn" class="secondary-btn danger-outline">Reset Arena</button>
-            </div>
-            <p id="diceResult" class="dice-result">Pregătit pentru misiune.</p>
-        </section>
-
-        <section class="arena-layout">
-            <div id="gameBoard" class="board-large" aria-label="Tabla jocului"></div>
-            <aside class="leaderboard glass-panel">
-                <h3>Top Agenți Live</h3>
-                <ul id="leaderboardList"></ul>
-            </aside>
-        </section>
-    </main>
-
-    <div id="challengeModal" class="modal hidden">
-        <div class="modal-content challenge-card">
-            <p class="eyebrow" id="challengeEyebrow">Mission Node</p>
-            <h2 id="challengeTitle">Provocare!</h2>
-            <p id="challengeText">...</p>
-
-            <div id="miniGameArea" class="mini-game-area" style="display:none;">
-                <canvas id="miniGameCanvas" width="300" height="300"></canvas>
-                <div id="bugGameContainer"></div>
-                <div id="memoryGameContainer"></div>
-                <p id="miniGameStats"></p>
-            </div>
-
-            <div id="answersContainer" class="answers"></div>
-
-            <button id="voiceChallengeBtn" class="answer-btn voice-action" style="display:none;">🎙️ Pornește microfonul</button>
-            <p id="voiceResult" class="voice-result"></p>
-
-            <button id="retryBtn" class="answer-btn danger-action" style="display:none;">❌ Reîncearcă misiunea</button>
-            <button id="closeModalBtn" class="answer-btn secondary-action" style="display:none;">Închide</button>
-        </div>
+    <div class="start-footer">
+      <button id="startGameBtn" class="btn primary big-btn">ÎNCEPE JOCUL</button>
     </div>
+  </div>
+</div>
 
-    <script src="script.js"></script>
+  <main class="app">
+    <aside class="panel sidebar">
+      <h1>Clasa Viitorului</h1>
+      <p class="subtitle">Prototip multiplayer: construire hartă, alegere școală, tile-uri și ture.</p>
+
+      <section class="box">
+        <h2>1. Setare joc</h2>
+        <label for="playerCount">Număr jucători</label>
+        <select id="playerCount"></select>
+        <button id="newGameBtn" class="btn primary">Începe joc nou</button>
+      </section>
+
+      <section class="box">
+        <h2>2. Tura curentă</h2>
+        <div id="turnInfo" class="turn-info">Inițializează jocul.</div>
+
+        <div class="btn-grid">
+          <button id="drawTileBtn" class="btn">Extrage tile</button>
+          <button id="drawActionBtn" class="btn">Carte acțiune</button>
+          <button id="drawCharacterBtn" class="btn">Carte personaj</button>
+          <button id="drawEventBtn" class="btn warning">Eveniment</button>
+        </div>
+
+        <button id="endTurnBtn" class="btn primary full">Finalizează tura</button>
+
+        <button id="openBankBtn" class="btn full" style="margin-top: 10px;">🏦 Schimb la Bancă (3 la 1)</button>
+        <button id="openUpgradeBtn" class="btn full" style="margin-top: 10px;">🏫 Upgrade școala de bază</button>
+        <div id="bankZone" class="box" style="display: none; border: 1px solid var(--cyan); margin-top: 10px;">
+          <h3 style="margin-top:0; font-size:13px; color:var(--text);">Schimbă 3 resurse pe 1</h3>
+          <label>Alege ce vrei să primești:</label>
+          <select id="bankGet">
+              <option value="innovation">💡 Inovație</option>
+              <option value="equipment">🧰 Echipament</option>
+              <option value="collaboration">🤝 Colaborare</option>
+          </select>
+          <button id="execBankBtn" class="btn primary full">Plătește 3 resurse & Cumpără</button>
+          <p class="hint" style="margin-top:6px;">Sistemul va prelua automat 3 resurse din cele pe care le ai în cantitatea cea mai mare.</p>
+        </div>
+      </section>
+
+      <section class="box">
+        <h2>3. Card extras</h2>
+        <div id="currentCard" class="card-view">Niciun card extras.</div>
+        <div id="draftZone" class="draft-zone" style="display:none;">
+          <div class="draft-title">Alege un tile din cele 3 opțiuni</div>
+          <div id="draftOptions" class="draft-options"></div>
+        </div>
+        <div id="cardLog" class="card-log"></div>
+      </section>
+
+      <section class="box">
+        <h2>Reguli tură</h2>
+        <ul class="rules">
+          <li>La început, fiecare jucător alege exact o singură școală de bază; după alegere, rândul trece automat la următorul jucător.</li>
+          <li>Un jucător extrage maximum 1 tile per tură.</li>
+          <li>Poate extrage maximum 1 carte acțiune și 1 carte personaj per tură.</li>
+          <li>Evenimentul global se extrage maximum o dată pe rundă.</li>
+          <li>Extinderea spre alte școli se face doar prin conexiuni, proiecte sau activități CNIDE.</li>
+          <li>Combo-urile de conectare oferă bonusuri imediate.</li>
+        </ul>
+      </section>
+    </aside>
+
+    <section class="panel board-panel">
+      <div class="topbar">
+        <strong>Harta Țării Educației Viitorului — 30 × 30</strong>
+        <span id="statusText">Se încarcă motorul jocului...</span>
+      </div>
+
+      <div class="canvas-tools">
+        <button id="zoomOutBtn" class="small-btn">− Zoom</button>
+        <button id="zoomInBtn" class="small-btn">+ Zoom</button>
+        <button id="centerBtn" class="small-btn">Centrează</button>
+        <span class="hint">Click pe hartă pentru alegere/plasare. Trage cu mouse-ul pentru deplasare hartă.</span>
+      </div>
+
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="gameCanvas" width="1600" height="1000"></canvas>
+        <div id="mapTooltip" class="map-tooltip" style="display:none;"></div>
+      </div>
+    </section>
+
+    <aside class="panel sidebar">
+      <section class="box">
+        <h2>Facțiunea curentă</h2>
+        <div id="factionInfoBox" class="faction-info-box">—</div>
+      </section>
+
+      <section class="box">
+        <h2>Obiective Naționale (Cursă)</h2>
+        <div id="missionsBox" class="missions-box"></div>
+      </section>
+
+      <section class="box">
+        <h2>Jucători</h2>
+        <div id="playersBox" class="players-box">—</div>
+      </section>
+
+      <section class="box">
+        <h2>Scor și câștig</h2>
+        <div id="scoreBox" class="score-box">—</div>
+      </section>
+
+      <section class="box">
+        <h2>Eveniment global</h2>
+        <div id="globalEventBox" class="info-box">Niciun eveniment activ.</div>
+      </section>
+
+      <section class="box">
+        <h2>Tile selectat</h2>
+        <div id="tileInfo" class="info-box">Nimic selectat.</div>
+      </section>
+
+      <section class="box">
+        <h2>Legendă resurse</h2>
+        <div class="resource-legend">
+          <span>💡 Inovație</span>
+          <span>🧰 Echipamente</span>
+          <span>🤝 Colaborare</span>
+          <span>⭐ Impact</span>
+        </div>
+      </section>
+
+      <section class="box">
+        <h2>Control</h2>
+        <button id="saveBtn" class="btn">Salvează</button>
+        <button id="loadBtn" class="btn">Încarcă</button>
+        <button id="resetBtn" class="btn danger">Reset total</button>
+      </section>
+    </aside>
+  </main>
+
+  <div id="upgradeModal" class="modal">
+    <div class="modal-content">
+      <span id="closeUpgradeModal" class="close-modal">&times;</span>
+      <h2>🏫 Dezvoltare Școală de Bază</h2>
+      <p>Investește resurse pentru a crește producția permanentă a școlii tale.</p>
+      <div id="upgradeList" class="upgrade-grid"></div>
+    </div>
+  </div>
+
+  <div id="endGameModal" class="modal">
+    <div class="modal-content victory-content">
+      <h1 id="victoryTitle">🏆 VICTORIE!</h1>
+      <div id="winnerPodium"></div>
+      <div id="finalStats"></div>
+      <button onclick="location.reload()" class="btn primary full">Joc Nou</button>
+    </div>
+  </div>
+
+
+
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
+
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+  <script src="script.js" defer></script>
+
+  
+<div id="lobbyScreen" class="start-overlay" style="display:none;">
+  <div class="start-content" style="max-width:600px;">
+    <h1>🌐 Lobby Multiplayer</h1>
+    <p class="start-subtitle">Creează o cameră sau conectează-te prin cod.</p>
+
+    <div style="display:grid; gap:16px; margin-top:20px;">
+      <button id="createRoomBtn" class="btn primary big-btn">🎮 Creează Cameră</button>
+
+      <div class="box" style="text-align:left;">
+        <h3>Conectare la cameră</h3>
+        <input id="roomCodeInput" maxlength="4" placeholder="Ex: A7F2"
+          style="width:100%; padding:14px; border-radius:12px; border:none; margin-top:10px; background:#13222c; color:white; text-transform:uppercase;">
+        <button id="joinRoomBtn" class="btn full" style="margin-top:12px;">🔗 Intră în Cameră</button>
+      </div>
+
+      <div id="lobbyStatus" class="hint"></div>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
