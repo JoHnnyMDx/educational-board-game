@@ -291,9 +291,38 @@
       state.currentPlayer = 0;
     }
 
-    // Dacă turnClientId există, îl folosim doar dacă mai corespunde unui jucător real.
-    if (isMultiplayer && state.turnClientId) {
-      const idx = state.players.findIndex(p => p.clientId === state.turnClientId);
+    if (!isMultiplayer) {
+      setTurnOwnerFromCurrentPlayer();
+      return;
+    }
+
+    // În multiplayer, prioritatea este: fiecare client conectat trebuie să aibă școală.
+    // Dacă există un jucător conectat fără școală, jocul revine în faza chooseSchool
+    // și tura aparține acelui client, nu unui index local incert.
+    const waitingSchoolIndex = state.players.findIndex(p => p.clientId && !p.school);
+    if (waitingSchoolIndex >= 0) {
+      state.phase = "chooseSchool";
+      state.currentPlayer = waitingSchoolIndex;
+      setTurnOwnerFromCurrentPlayer();
+      return;
+    }
+
+    if (state.phase === "chooseSchool") {
+      // Toți cei conectați au școală, deci se poate trece în joc.
+      state.phase = "play";
+      const firstReadyIndex = state.players.findIndex(p => p.clientId && p.school);
+      if (firstReadyIndex >= 0 && (!state.players[state.currentPlayer]?.clientId || !state.players[state.currentPlayer]?.school)) {
+        state.currentPlayer = firstReadyIndex;
+      }
+      setTurnOwnerFromCurrentPlayer();
+      return;
+    }
+
+    const active = state.players[state.currentPlayer];
+
+    // Dacă turnClientId indică un jucător valid și pregătit, îl păstrăm.
+    if (state.turnClientId) {
+      const idx = state.players.findIndex(p => p.clientId === state.turnClientId && p.school);
       if (idx >= 0) {
         state.currentPlayer = idx;
         state.turnPlayerId = state.players[idx].id;
@@ -301,11 +330,9 @@
       }
     }
 
-    // Fallback: nu lăsăm tura pe un slot fără client sau fără școală în faza de joc.
-    let active = state.players[state.currentPlayer];
-    const invalid = isMultiplayer && (!active?.clientId || (state.phase === "play" && !active.school));
-    if (invalid) {
-      const idx = firstPlayerIndex(p => p.clientId && (state.phase !== "play" || p.school));
+    // Fallback: nu lăsăm tura pe un slot fără client/școală.
+    if (!active?.clientId || !active?.school) {
+      const idx = state.players.findIndex(p => p.clientId && p.school);
       if (idx >= 0) state.currentPlayer = idx;
     }
 
@@ -334,6 +361,8 @@
   function syncToCloud() {
     if (remoteRenderMode) return;
     if (!isMultiplayer || !roomCode || !state || !db) return;
+
+    normalizeTurnOwner();
 
     db.ref("rooms/" + roomCode + "/state")
       .set(JSON.stringify(state));
@@ -379,15 +408,17 @@
     if (!isMultiplayer) return true;
     if (!state || !state.players) return false;
 
-    const local = getLocalPlayerByClientId();
-    if (!local) return false;
-
-    if (state.turnClientId) {
-      return state.turnClientId === clientId;
-    }
-
     const active = state.players[state.currentPlayer];
-    return Boolean(active?.clientId && active.clientId === clientId);
+    const local = getLocalPlayerByClientId();
+
+    // Regula principală: clientId-ul din tură trebuie să fie al browserului curent.
+    if (state.turnClientId) return state.turnClientId === clientId;
+
+    // Fallback pentru stări vechi sau camere create cu versiuni anterioare.
+    if (active?.clientId) return active.clientId === clientId;
+    if (local) return active?.id === local.id;
+
+    return state.currentPlayer === (localPlayerId - 1);
   }
 
   function shuffle(array) {
@@ -810,7 +841,7 @@
       ui.drawActionBtn.disabled = true;
       ui.drawCharacterBtn.disabled = true;
       ui.drawEventBtn.disabled = true;
-      ui.endTurnBtn.disabled = !isMyTurn();
+      ui.endTurnBtn.disabled = false;
       return;
     }
 
@@ -819,7 +850,7 @@
     ui.drawActionBtn.disabled = !isMyTurn() || state.actionDrawnThisTurn || Boolean(state.pendingAction);
     ui.drawCharacterBtn.disabled = !isMyTurn() || state.characterDrawnThisTurn || Boolean(state.pendingCharacter);
     ui.drawEventBtn.disabled = !isMyTurn() || state.eventDrawnThisRound;
-    ui.endTurnBtn.disabled = !isMyTurn();
+    ui.endTurnBtn.disabled = false;
   }
 
   function updateTooltip(event) {
@@ -1095,11 +1126,15 @@
   }
 
   function endTurn() {
-    if (!isMyTurn()) return alert("Așteaptă! Nu este rândul tău.");
     if (!state || state.gameOver) return;
+    normalizeTurnOwner();
+    renderAll();
+
+    if (!isMyTurn()) return alert("Așteaptă! Nu este rândul tău.");
 
     if (state.phase === "chooseSchool") {
       setStatus("În faza de început alegerea școlii se face prin click direct pe hartă.");
+      syncGameState("waiting-school-before-end-turn");
       return;
     }
 
@@ -2354,13 +2389,19 @@
             localPlayerId = nextId;
           }
 
-          if (parsedState.phase === "chooseSchool") {
-            const waitingIndex = parsedState.players.findIndex(p => p.clientId && !p.school);
-            if (waitingIndex >= 0) parsedState.currentPlayer = waitingIndex;
+          // Important: dacă există un client conectat fără școală, camera intră în chooseSchool
+          // pentru acel client. Altfel tura poate rămâne blocată și butonul „Finalizează” nu are efect.
+          const waitingIndex = parsedState.players.findIndex(p => p.clientId && !p.school);
+          if (waitingIndex >= 0) {
+            parsedState.phase = "chooseSchool";
+            parsedState.currentPlayer = waitingIndex;
           }
-          const activeAfterJoin = parsedState.players[parsedState.currentPlayer];
-          parsedState.turnClientId = activeAfterJoin?.clientId || null;
-          parsedState.turnPlayerId = activeAfterJoin?.id || null;
+
+          state = parsedState;
+          normalizeDynamicPlayers();
+          normalizeTurnOwner();
+          parsedState.turnClientId = state.turnClientId;
+          parsedState.turnPlayerId = state.turnPlayerId;
 
           db.ref("rooms/" + roomCode + "/joinedPlayers").set(parsedState.players.length);
           db.ref("rooms/" + roomCode + "/clients/" + clientId).set(localPlayerId);
