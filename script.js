@@ -24,7 +24,7 @@
   let roomCode = null;
   let localPlayerId = 1;
   let isMultiplayer = false;
-  let ignoreNextSync = false;
+  // Sincronizarea Firebase nu mai ignoră evenimentul local; fiecare client re-randează după starea din cloud.
   // IMPORTANT:
   // Folosim sessionStorage, nu localStorage.
   // localStorage este comun între tab-uri, iar la testare în același browser
@@ -279,31 +279,54 @@
     state.turnPlayerId = active?.id || null;
   }
 
-  function repairTurnPointer() {
+  function firstPlayerIndex(predicate) {
+    if (!state || !state.players) return -1;
+    return state.players.findIndex(predicate);
+  }
+
+  function normalizeTurnOwner() {
     if (!state || !state.players || !state.players.length) return;
 
     if (typeof state.currentPlayer !== "number" || state.currentPlayer < 0 || state.currentPlayer >= state.players.length) {
       state.currentPlayer = 0;
     }
 
-    let active = state.players[state.currentPlayer];
-
-    // În multiplayer nu lăsăm tura pe un slot fără client real.
-    if (isMultiplayer && (!active || !active.clientId)) {
-      const fallbackIndex = state.players.findIndex(p => p.clientId);
-      state.currentPlayer = fallbackIndex >= 0 ? fallbackIndex : 0;
-      active = state.players[state.currentPlayer];
-    }
-
-    // Dacă avem turnClientId salvat în cloud, acesta devine sursa principală.
+    // Dacă turnClientId există, îl folosim doar dacă mai corespunde unui jucător real.
     if (isMultiplayer && state.turnClientId) {
-      const ownerIndex = state.players.findIndex(p => p.clientId === state.turnClientId);
-      if (ownerIndex >= 0) {
-        state.currentPlayer = ownerIndex;
-        active = state.players[state.currentPlayer];
+      const idx = state.players.findIndex(p => p.clientId === state.turnClientId);
+      if (idx >= 0) {
+        state.currentPlayer = idx;
+        state.turnPlayerId = state.players[idx].id;
+        return;
       }
     }
 
+    // Fallback: nu lăsăm tura pe un slot fără client sau fără școală în faza de joc.
+    let active = state.players[state.currentPlayer];
+    const invalid = isMultiplayer && (!active?.clientId || (state.phase === "play" && !active.school));
+    if (invalid) {
+      const idx = firstPlayerIndex(p => p.clientId && (state.phase !== "play" || p.school));
+      if (idx >= 0) state.currentPlayer = idx;
+    }
+
+    setTurnOwnerFromCurrentPlayer();
+  }
+
+  function advanceToNextTurnPlayer() {
+    if (!state || !state.players || !state.players.length) return;
+
+    for (let step = 1; step <= state.players.length; step++) {
+      const idx = (state.currentPlayer + step) % state.players.length;
+      const p = state.players[idx];
+      if (!p) continue;
+      if (isMultiplayer && !p.clientId) continue;
+      if (state.phase === "play" && !p.school) continue;
+      state.currentPlayer = idx;
+      setTurnOwnerFromCurrentPlayer();
+      return;
+    }
+
+    state.currentPlayer = 0;
     setTurnOwnerFromCurrentPlayer();
   }
 
@@ -320,11 +343,11 @@
   function syncGameState(reason = "update") {
     if (!isMultiplayer || !roomCode || !state || !db || remoteRenderMode) return;
 
+    normalizeTurnOwner();
     state.lastSyncReason = reason;
     state.lastSyncAt = Date.now();
     state.lastSyncBy = localPlayerId;
     state.lastSyncClientId = clientId;
-    setTurnOwnerFromCurrentPlayer();
 
     syncToCloud();
   }
@@ -338,7 +361,7 @@
       if (rawState) {
         state = JSON.parse(rawState);
         normalizeDynamicPlayers();
-        repairTurnPointer();
+        normalizeTurnOwner();
         const localIdx = state.players.findIndex(p => p.clientId === clientId);
         if (localIdx >= 0) localPlayerId = localIdx + 1;
         remoteRenderMode = true;
@@ -356,18 +379,15 @@
     if (!isMultiplayer) return true;
     if (!state || !state.players) return false;
 
-    repairTurnPointer();
+    const local = getLocalPlayerByClientId();
+    if (!local) return false;
+
+    if (state.turnClientId) {
+      return state.turnClientId === clientId;
+    }
 
     const active = state.players[state.currentPlayer];
-    const local = getLocalPlayerByClientId();
-
-    if (!active || !local) return false;
-
-    // Sursa principală a turei este clientId-ul salvat în Firebase.
-    if (state.turnClientId) return state.turnClientId === clientId;
-
-    // Fallback pentru camere vechi/salvări vechi.
-    return Boolean(active.clientId && active.clientId === local.clientId);
+    return Boolean(active?.clientId && active.clientId === clientId);
   }
 
   function shuffle(array) {
@@ -1026,15 +1046,20 @@
     revealArea(cell.x, cell.y, 1);
 
     if (isMultiplayer) {
-      if (state.players.every(p => p.school)) {
+      const connectedPlayers = state.players.filter(p => p.clientId);
+      if (connectedPlayers.length && connectedPlayers.every(p => p.school)) {
         state.phase = "play";
-        state.currentPlayer = 0;
+        state.currentPlayer = state.players.findIndex(p => p.clientId && p.school);
+        if (state.currentPlayer < 0) state.currentPlayer = 0;
         setTurnOwnerFromCurrentPlayer();
         resetTurnFlags();
         produceAtTurnStart(currentPlayer());
         setStatus(`Toți jucătorii conectați au ales școala. Începe jocul. Este rândul lui ${currentPlayer().name}.`);
       } else {
-        advancePlayer();
+        const waitingIndex = state.players.findIndex(p => p.clientId && !p.school);
+        if (waitingIndex >= 0) state.currentPlayer = waitingIndex;
+        else advanceToNextTurnPlayer();
+        setTurnOwnerFromCurrentPlayer();
         setStatus(`${player.name} a ales școala. Urmează ${currentPlayer().name}.`);
       }
       syncGameState("choose-school");
@@ -1140,8 +1165,7 @@
   }
 
   function advancePlayer() {
-    state.currentPlayer = nextPlayerIndex(state.currentPlayer);
-    setTurnOwnerFromCurrentPlayer();
+    advanceToNextTurnPlayer();
   }
 
   function drawTileCard() {
@@ -1903,7 +1927,7 @@
       <div class="faction-info-power">${escapeHtml(local.faction.power)}</div>
       <div>${escapeHtml(local.faction.desc)}</div>
       <div class="badge">Tu: ${escapeHtml(local.name)}</div>
-      <div class="badge">Tura: ${escapeHtml(turn?.name || "—")}</div><div class="badge">ID local: ${localPlayerId}</div><div class="badge">Client: ${escapeHtml(clientId.slice(-6))}</div><div class="badge">Activ index: ${state.currentPlayer + 1}</div>
+      <div class="badge">Tura: ${escapeHtml(turn?.name || "—")}</div><div class="badge">ID local: ${localPlayerId}</div><div class="badge">Client: ${escapeHtml(clientId.slice(-6))}</div><div class="badge">Activ index: ${state.currentPlayer + 1}</div><div class="badge">TurnClient: ${escapeHtml((state.turnClientId || "—").slice(-6))}</div>
       ${isMultiplayer ? `<div class="badge">Camera: ${escapeHtml(roomCode)}</div>` : ""}
     `;
   }
@@ -2331,10 +2355,9 @@
           }
 
           if (parsedState.phase === "chooseSchool") {
-            const waitingIndex = parsedState.players.findIndex(p => !p.school);
+            const waitingIndex = parsedState.players.findIndex(p => p.clientId && !p.school);
             if (waitingIndex >= 0) parsedState.currentPlayer = waitingIndex;
           }
-
           const activeAfterJoin = parsedState.players[parsedState.currentPlayer];
           parsedState.turnClientId = activeAfterJoin?.clientId || null;
           parsedState.turnPlayerId = activeAfterJoin?.id || null;
