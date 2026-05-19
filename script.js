@@ -271,12 +271,46 @@
     });
   }
 
+
+  function setTurnOwnerFromCurrentPlayer() {
+    if (!state || !state.players || !state.players.length) return;
+    const active = state.players[state.currentPlayer];
+    state.turnClientId = active?.clientId || null;
+    state.turnPlayerId = active?.id || null;
+  }
+
+  function repairTurnPointer() {
+    if (!state || !state.players || !state.players.length) return;
+
+    if (typeof state.currentPlayer !== "number" || state.currentPlayer < 0 || state.currentPlayer >= state.players.length) {
+      state.currentPlayer = 0;
+    }
+
+    let active = state.players[state.currentPlayer];
+
+    // În multiplayer nu lăsăm tura pe un slot fără client real.
+    if (isMultiplayer && (!active || !active.clientId)) {
+      const fallbackIndex = state.players.findIndex(p => p.clientId);
+      state.currentPlayer = fallbackIndex >= 0 ? fallbackIndex : 0;
+      active = state.players[state.currentPlayer];
+    }
+
+    // Dacă avem turnClientId salvat în cloud, acesta devine sursa principală.
+    if (isMultiplayer && state.turnClientId) {
+      const ownerIndex = state.players.findIndex(p => p.clientId === state.turnClientId);
+      if (ownerIndex >= 0) {
+        state.currentPlayer = ownerIndex;
+        active = state.players[state.currentPlayer];
+      }
+    }
+
+    setTurnOwnerFromCurrentPlayer();
+  }
+
   // --- FUNCȚII CLOUD ---
   function syncToCloud() {
     if (remoteRenderMode) return;
     if (!isMultiplayer || !roomCode || !state || !db) return;
-
-    ignoreNextSync = true;
 
     db.ref("rooms/" + roomCode + "/state")
       .set(JSON.stringify(state));
@@ -289,6 +323,8 @@
     state.lastSyncReason = reason;
     state.lastSyncAt = Date.now();
     state.lastSyncBy = localPlayerId;
+    state.lastSyncClientId = clientId;
+    setTurnOwnerFromCurrentPlayer();
 
     syncToCloud();
   }
@@ -297,16 +333,12 @@
     if (!db) return;
 
     db.ref("rooms/" + roomCode + "/state").on("value", snapshot => {
-      if (ignoreNextSync) {
-        ignoreNextSync = false;
-        return;
-      }
-
       const rawState = snapshot.val();
 
       if (rawState) {
         state = JSON.parse(rawState);
         normalizeDynamicPlayers();
+        repairTurnPointer();
         const localIdx = state.players.findIndex(p => p.clientId === clientId);
         if (localIdx >= 0) localPlayerId = localIdx + 1;
         remoteRenderMode = true;
@@ -324,16 +356,18 @@
     if (!isMultiplayer) return true;
     if (!state || !state.players) return false;
 
-    const active = state.players[state.currentPlayer];
-    if (!active) return false;
+    repairTurnPointer();
 
+    const active = state.players[state.currentPlayer];
     const local = getLocalPlayerByClientId();
 
-    if (local && active.clientId && local.clientId && active.clientId === local.clientId) {
-      return true;
-    }
+    if (!active || !local) return false;
 
-    return state.currentPlayer === (localPlayerId - 1);
+    // Sursa principală a turei este clientId-ul salvat în Firebase.
+    if (state.turnClientId) return state.turnClientId === clientId;
+
+    // Fallback pentru camere vechi/salvări vechi.
+    return Boolean(active.clientId && active.clientId === local.clientId);
   }
 
   function shuffle(array) {
@@ -443,6 +477,8 @@
       discovered: Array.from({ length: GRID_SIZE }, () => Array.from({ length: GRID_SIZE }, () => false)),
       players: Array.from({ length: count }, (_, index) => makePlayer(index, isMultiplayer && index === 0 ? clientId : null)),
       currentPlayer: 0,
+      turnClientId: isMultiplayer ? clientId : null,
+      turnPlayerId: 1,
       phase: "chooseSchool",
       selectedCell: null,
       currentTile: null,
@@ -480,6 +516,7 @@
     if (ui.draftZone) ui.draftZone.style.display = "none";
     showCard(null);
     setStatus("Joc nou creat. Jucătorul 1 alege o școală liberă.");
+    setTurnOwnerFromCurrentPlayer();
     centerMap();
     renderAll();
   }
@@ -992,6 +1029,7 @@
       if (state.players.every(p => p.school)) {
         state.phase = "play";
         state.currentPlayer = 0;
+        setTurnOwnerFromCurrentPlayer();
         resetTurnFlags();
         produceAtTurnStart(currentPlayer());
         setStatus(`Toți jucătorii conectați au ales școala. Începe jocul. Este rândul lui ${currentPlayer().name}.`);
@@ -1007,6 +1045,7 @@
     if (state.players.every(p => p.school)) {
       state.phase = "play";
       state.currentPlayer = 0;
+      setTurnOwnerFromCurrentPlayer();
       resetTurnFlags();
       produceAtTurnStart(currentPlayer());
       setStatus(`Toți jucătorii au ales școala. Începe construcția. Este rândul lui ${currentPlayer().name}.`);
@@ -1102,6 +1141,7 @@
 
   function advancePlayer() {
     state.currentPlayer = nextPlayerIndex(state.currentPlayer);
+    setTurnOwnerFromCurrentPlayer();
   }
 
   function drawTileCard() {
@@ -2294,6 +2334,10 @@
             const waitingIndex = parsedState.players.findIndex(p => !p.school);
             if (waitingIndex >= 0) parsedState.currentPlayer = waitingIndex;
           }
+
+          const activeAfterJoin = parsedState.players[parsedState.currentPlayer];
+          parsedState.turnClientId = activeAfterJoin?.clientId || null;
+          parsedState.turnPlayerId = activeAfterJoin?.id || null;
 
           db.ref("rooms/" + roomCode + "/joinedPlayers").set(parsedState.players.length);
           db.ref("rooms/" + roomCode + "/clients/" + clientId).set(localPlayerId);
